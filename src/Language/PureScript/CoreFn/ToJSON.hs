@@ -22,7 +22,7 @@ import Data.Text qualified as T
 
 import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.AST.SourcePos (SourceSpan(..))
-import Language.PureScript.CoreFn (Ann, Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Meta(..), Module(..))
+import Language.PureScript.CoreFn (Ann, Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Meta(..), Module(..), CoreFnType(..))
 import Language.PureScript.Names (Ident, ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..), runIdent)
 import Language.PureScript.PSString (PSString)
 
@@ -53,10 +53,20 @@ sourceSpanToJSON (SourceSpan _ spanStart spanEnd) =
          , "end"   .= spanEnd
          ]
 
+coreFnTypeToJSON :: CoreFnType -> Value
+coreFnTypeToJSON CFInt = toJSON "Int"
+coreFnTypeToJSON CFNumber = toJSON "Number"
+coreFnTypeToJSON CFString = toJSON "String"
+coreFnTypeToJSON CFBoolean = toJSON "Boolean"
+coreFnTypeToJSON CFChar = toJSON "Char"
+coreFnTypeToJSON (CFArray ty) = object [ "Array" .= coreFnTypeToJSON ty ]
+coreFnTypeToJSON CFAny = toJSON "Any"
+
 annToJSON :: Ann -> Value
-annToJSON (ss, _, m) = object [ "sourceSpan"  .= sourceSpanToJSON ss
-                              , "meta"        .= maybe Null metaToJSON m
-                              ]
+annToJSON (ss, _, mty, m) = object [ "sourceSpan"  .= sourceSpanToJSON ss
+                                   , "type"        .= maybe Null coreFnTypeToJSON mty
+                                   , "meta"        .= maybe Null metaToJSON m
+                                   ]
 
 literalToJSON :: (a -> Value) -> Literal a -> Value
 literalToJSON _ (NumericLiteral (Left n))

@@ -11,7 +11,7 @@ import Prelude
 
 import Control.Applicative ((<|>))
 
-import Data.Aeson (FromJSON(..), Object, Value(..), withObject, withText, (.:))
+import Data.Aeson (FromJSON(..), Object, Value(..), withObject, withText, (.:), (.:?))
 import Data.Aeson.Types (Parser, listParser)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
@@ -22,7 +22,7 @@ import Data.Version (Version, parseVersion)
 import Language.PureScript.AST.SourcePos (SourceSpan(..))
 import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.CoreFn.Ann (Ann)
-import Language.PureScript.CoreFn (Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Guard, Meta(..), Module(..))
+import Language.PureScript.CoreFn (Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Guard, Meta(..), Module(..), CoreFnType(..))
 import Language.PureScript.Names (Ident(..), ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..), unusedIdent)
 import Language.PureScript.PSString (PSString)
 
@@ -64,13 +64,37 @@ metaFromJSON v = withObject "Meta" metaFromObj v
       is <- o .: "identifiers" >>= listParser identFromJSON
       return $ Just (IsConstructor ct is)
 
+coreFnTypeFromJSON :: Value -> Parser (Maybe CoreFnType)
+coreFnTypeFromJSON Null = return Nothing
+coreFnTypeFromJSON v = case v of
+  Data.Aeson.String "Int" -> return $ Just CFInt
+  Data.Aeson.String "Number" -> return $ Just CFNumber
+  Data.Aeson.String "String" -> return $ Just CFString
+  Data.Aeson.String "Boolean" -> return $ Just CFBoolean
+  Data.Aeson.String "Char" -> return $ Just CFChar
+  Data.Aeson.String "Any" -> return $ Just CFAny
+  Data.Aeson.Object o -> do
+    arr <- o .:? "Array"
+    case arr of
+      Just arrV -> do
+        inner <- coreFnTypeFromJSON arrV
+        case inner of
+          Just innerTy -> return $ Just (CFArray innerTy)
+          Nothing -> return $ Just CFAny
+      Nothing -> return $ Just CFAny
+  _ -> return $ Just CFAny
+
 annFromJSON :: FilePath -> Value -> Parser Ann
 annFromJSON modulePath = withObject "Ann" annFromObj
   where
   annFromObj o = do
     ss <- o .: "sourceSpan" >>= sourceSpanFromJSON modulePath
+    mtyVal <- o .:? "type"
+    mty <- case mtyVal of
+             Nothing -> return Nothing
+             Just v -> coreFnTypeFromJSON v
     mm <- o .: "meta" >>= metaFromJSON
-    return (ss, [], mm)
+    return (ss, [], mty, mm)
 
 sourceSpanFromJSON :: FilePath -> Value -> Parser SourceSpan
 sourceSpanFromJSON modulePath = withObject "SourceSpan" $ \o ->
