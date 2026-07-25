@@ -55,7 +55,7 @@ moduleToJs
   => Module Ann
   -> Maybe PSString
   -> m AST.Module
-moduleToJs (Module _ coms mn _ imps exps reExps foreigns decls) foreignInclude =
+moduleToJs (Module _ coms mn _ imps exps reExps foreigns decls _) foreignInclude =
   rethrow (addHint (ErrorInModule mn)) $ do
     let usedNames = concatMap getNames decls
     let imps' = ordNub $ map snd imps

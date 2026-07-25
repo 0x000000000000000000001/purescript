@@ -19,9 +19,9 @@ import Language.PureScript.CoreFn.Ann (Ann, ssAnn, CoreFnType(..))
 import Language.PureScript.CoreFn.Binders (Binder(..))
 import Language.PureScript.CoreFn.Expr (Bind(..), CaseAlternative(..), Expr(..), Guard)
 import Language.PureScript.CoreFn.Meta (ConstructorType(..), Meta(..))
-import Language.PureScript.CoreFn.Module (Module(..))
+import Language.PureScript.CoreFn.Module (Module(..), DataDecl(..), DataConstructor(..))
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.Environment (DataDeclType(..), Environment(..), NameKind(..), isDictTypeName, lookupConstructor, lookupValue)
+import Language.PureScript.Environment (DataDeclType(..), TypeKind(..), Environment(..), NameKind(..), isDictTypeName, lookupConstructor, lookupValue)
 import Language.PureScript.Label (Label(..))
 import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), getQual)
 import Language.PureScript.PSString (PSString)
@@ -40,7 +40,8 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
       reExps = M.map ordNub $ M.unionsWith (++) (mapMaybe (fmap reExportsToCoreFn . toReExportRef) exps)
       externs = ordNub $ mapMaybe externToCoreFn decls
       decls' = concatMap declToCoreFn decls
-  in Module modSS coms mn (spanName modSS) imports' exps' reExps externs decls'
+      dataDecls' = concatMap dataDeclToCoreFn decls
+  in Module modSS coms mn (spanName modSS) imports' exps' reExps externs decls' dataDecls'
   where
   -- Creates a map from a module name to the re-export references defined in
   -- that module.
@@ -60,6 +61,14 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
 
   ssA :: SourceSpan -> Ann
   ssA ss = (ss, [], Nothing, Nothing)
+
+  -- Extracts data declarations (schema) from AST to CoreFn representation.
+  dataDeclToCoreFn :: A.Declaration -> [DataDecl]
+  dataDeclToCoreFn (A.DataDeclaration _ Data tyName _ ctors) =
+    [DataDecl tyName (fmap (\ctorDecl -> DataConstructor (A.dataCtorName ctorDecl) (fmap (simplifyType env . snd) (A.dataCtorFields ctorDecl))) ctors)]
+  dataDeclToCoreFn (A.DataBindingGroupDeclaration ds) =
+    concatMap dataDeclToCoreFn ds
+  dataDeclToCoreFn _ = []
 
   -- Desugars member declarations from AST to CoreFn representation.
   declToCoreFn :: A.Declaration -> [Bind Ann]
@@ -87,11 +96,11 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
   -- Desugars expressions from AST to CoreFn representation.
   exprToCoreFn :: SourceSpan -> [Comment] -> Maybe SourceType -> A.Expr -> Expr Ann
   exprToCoreFn _ com ty (A.Literal ss lit) =
-    Literal (ss, com, simplifyType <$> ty, Nothing) (fmap (exprToCoreFn ss com Nothing) lit)
+    Literal (ss, com, simplifyType env <$> ty, Nothing) (fmap (exprToCoreFn ss com Nothing) lit)
   exprToCoreFn ss com ty (A.Accessor name v) =
-    Accessor (ss, com, simplifyType <$> ty, Nothing) name (exprToCoreFn ss [] Nothing v)
+    Accessor (ss, com, simplifyType env <$> ty, Nothing) name (exprToCoreFn ss [] Nothing v)
   exprToCoreFn ss com ty (A.ObjectUpdate obj vs) =
-    ObjectUpdate (ss, com, simplifyType <$> ty, Nothing) (exprToCoreFn ss [] Nothing obj) (ty >>= unchangedRecordFields (fmap fst vs)) $ fmap (second (exprToCoreFn ss [] Nothing)) vs
+    ObjectUpdate (ss, com, simplifyType env <$> ty, Nothing) (exprToCoreFn ss [] Nothing obj) (ty >>= unchangedRecordFields (fmap fst vs)) $ fmap (second (exprToCoreFn ss [] Nothing)) vs
     where
     -- Return the unchanged labels of a closed record, or Nothing for other types or open records.
     unchangedRecordFields :: [PSString] -> Type a -> Maybe [PSString]
@@ -104,11 +113,11 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
         collect _ = Nothing
     unchangedRecordFields _ _ = Nothing
   exprToCoreFn ss com ty (A.Abs (A.VarBinder _ name) v) =
-    Abs (ss, com, simplifyType <$> ty, Nothing) name (exprToCoreFn ss [] Nothing v)
+    Abs (ss, com, simplifyType env <$> ty, Nothing) name (exprToCoreFn ss [] Nothing v)
   exprToCoreFn _ _ _ (A.Abs _ _) =
     internalError "Abs with Binder argument was not desugared before exprToCoreFn mn"
   exprToCoreFn ss com ty (A.App v1 v2) =
-    App (ss, com, simplifyType <$> ty, (isDictCtor v1 || isSynthetic v2) `orEmpty` IsSyntheticApp) v1' v2'
+    App (ss, com, simplifyType env <$> ty, (isDictCtor v1 || isSynthetic v2) `orEmpty` IsSyntheticApp) v1' v2'
     where
     v1' = exprToCoreFn ss [] Nothing v1
     v2' = exprToCoreFn ss [] Nothing v2
@@ -124,21 +133,21 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
   exprToCoreFn ss com _ (A.Unused _) =
     Var (ss, com, Nothing, Nothing) C.I_undefined
   exprToCoreFn _ com ty (A.Var ss ident) =
-    Var (ss, com, simplifyType <$> ty, getValueMeta ident) ident
+    Var (ss, com, simplifyType env <$> ty, getValueMeta ident) ident
   exprToCoreFn ss com ty (A.IfThenElse v1 v2 v3) =
-    Case (ss, com, simplifyType <$> ty, Nothing) [exprToCoreFn ss [] Nothing v1]
+    Case (ss, com, simplifyType env <$> ty, Nothing) [exprToCoreFn ss [] Nothing v1]
       [ CaseAlternative [LiteralBinder (ssAnn ss) $ BooleanLiteral True]
                         (Right $ exprToCoreFn ss [] Nothing v2)
       , CaseAlternative [NullBinder (ssAnn ss)]
                         (Right $ exprToCoreFn ss [] Nothing v3) ]
   exprToCoreFn _ com ty (A.Constructor ss name) =
-    Var (ss, com, simplifyType <$> ty, Just $ getConstructorMeta name) $ fmap properToIdent name
+    Var (ss, com, simplifyType env <$> ty, Just $ getConstructorMeta name) $ fmap properToIdent name
   exprToCoreFn ss com ty (A.Case vs alts) =
-    Case (ss, com, simplifyType <$> ty, Nothing) (fmap (exprToCoreFn ss [] Nothing) vs) (fmap (altToCoreFn ss) alts)
+    Case (ss, com, simplifyType env <$> ty, Nothing) (fmap (exprToCoreFn ss [] Nothing) vs) (fmap (altToCoreFn ss) alts)
   exprToCoreFn ss com _ (A.TypedValue _ v ty) =
     exprToCoreFn ss com (Just ty) v
   exprToCoreFn ss com ty (A.Let w ds v) =
-    Let (ss, com, simplifyType <$> ty, getLetMeta w) (concatMap declToCoreFn ds) (exprToCoreFn ss [] Nothing v)
+    Let (ss, com, simplifyType env <$> ty, getLetMeta w) (concatMap declToCoreFn ds) (exprToCoreFn ss [] Nothing v)
   exprToCoreFn _ com ty (A.PositionedValue ss com1 v) =
     exprToCoreFn ss (com ++ com1) ty v
   exprToCoreFn _ _ _ e =
@@ -272,13 +281,50 @@ properToIdent :: ProperName a -> Ident
 properToIdent = Ident . runProperName
 
 -- | Simplifies a SourceType into a CoreFnType
-simplifyType :: SourceType -> CoreFnType
-simplifyType (TypeConstructor _ (Qualified _ (ProperName name)))
+simplifyType :: Environment -> SourceType -> CoreFnType
+simplifyType env (ForAll _ _ _ _ ty _) = simplifyType env ty
+simplifyType env (ConstrainedType _ _ ty) =
+  let retT = simplifyType env ty
+  in case retT of
+       CFFunc args' ret' -> CFFunc (CFAny : args') ret'
+       _ -> CFFunc [CFAny] retT
+simplifyType env (ParensInType _ ty) = simplifyType env ty
+simplifyType env (TypeConstructor _ qname@(Qualified _ (ProperName name)))
   | name == "Int"     = CFInt
   | name == "Number"  = CFNumber
   | name == "String"  = CFString
   | name == "Boolean" = CFBoolean
   | name == "Char"    = CFChar
-simplifyType (TypeApp _ (TypeConstructor _ (Qualified _ (ProperName "Array"))) inner) =
-  CFArray (simplifyType inner)
-simplifyType _ = CFAny
+  | otherwise =
+      case M.lookup qname (types env) of
+        Just (_, DataType Data _ _) -> CFAdt qname
+        _ -> CFAny
+simplifyType env (TypeApp _ (TypeConstructor _ (Qualified _ (ProperName name))) inner)
+  | name == "Array" = CFArray (simplifyType env inner)
+simplifyType env (TypeApp _ (TypeApp _ (TypeConstructor _ (Qualified _ (ProperName name))) arg) ret)
+  | name == "Function" =
+      let
+        argT = simplifyType env arg
+        retT = simplifyType env ret
+      in case retT of
+           CFFunc args' ret' -> CFFunc (argT : args') ret'
+           _ -> CFFunc [argT] retT
+simplifyType env (TypeApp _ (TypeConstructor _ (Qualified _ (ProperName name))) row)
+  | name == "Record" =
+      let
+        rowToFields (RCons _ (Label l) ty rest) = do
+          fields <- rowToFields rest
+          return ((l, simplifyType env ty) : fields)
+        rowToFields (REmpty _) = Just []
+        rowToFields _ = Nothing
+      in case rowToFields row of
+           Just fields -> CFRecord fields
+           Nothing -> CFAny
+simplifyType env (TypeApp _ ty1 _) =
+  case ty1 of
+    TypeConstructor _ qname -> 
+      case M.lookup qname (types env) of
+        Just (_, DataType Data _ _) -> CFAdt qname
+        _ -> simplifyType env ty1
+    _ -> simplifyType env ty1
+simplifyType _ _ = CFAny

@@ -165,6 +165,7 @@ moduleFromJSON = withObject "Module" moduleFromObj
     moduleDecls <- o .: "decls" >>= listParser (bindFromJSON modulePath)
     moduleForeign <- o .: "foreign" >>= listParser identFromJSON
     moduleComments <- o .: "comments" >>= listParser parseJSON
+    let moduleDataDecls = []
     return (version, Module {..})
 
   versionFromJSON :: String -> Parser Version

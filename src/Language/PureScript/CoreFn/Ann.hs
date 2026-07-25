@@ -5,6 +5,8 @@ import Prelude
 import Language.PureScript.AST.SourcePos (SourceSpan)
 import Language.PureScript.Comments (Comment)
 import Language.PureScript.CoreFn.Meta (Meta)
+import Language.PureScript.PSString (PSString)
+import Language.PureScript.Names (Qualified, ProperName, ProperNameType(..))
 import GHC.Generics (Generic)
 import Control.DeepSeq (NFData)
 
@@ -18,6 +20,9 @@ data CoreFnType
   | CFBoolean
   | CFChar
   | CFArray CoreFnType
+  | CFFunc [CoreFnType] CoreFnType
+  | CFRecord [(PSString, CoreFnType)]
+  | CFAdt (Qualified (ProperName 'TypeName))
   | CFAny
   deriving (Show, Eq, Ord, Generic)
 

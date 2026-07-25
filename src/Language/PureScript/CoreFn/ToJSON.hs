@@ -22,9 +22,9 @@ import Data.Text qualified as T
 
 import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.AST.SourcePos (SourceSpan(..))
-import Language.PureScript.CoreFn (Ann, Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Meta(..), Module(..), CoreFnType(..))
+import Language.PureScript.CoreFn (Ann, Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Meta(..), Module(..), CoreFnType(..), DataDecl(..), DataConstructor(..))
 import Language.PureScript.Names (Ident, ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..), runIdent)
-import Language.PureScript.PSString (PSString)
+import Language.PureScript.PSString (PSString, decodeStringWithReplacement)
 
 constructorTypeToJSON :: ConstructorType -> Value
 constructorTypeToJSON ProductType = toJSON "ProductType"
@@ -60,6 +60,14 @@ coreFnTypeToJSON CFString = toJSON "String"
 coreFnTypeToJSON CFBoolean = toJSON "Boolean"
 coreFnTypeToJSON CFChar = toJSON "Char"
 coreFnTypeToJSON (CFArray ty) = object [ "Array" .= coreFnTypeToJSON ty ]
+coreFnTypeToJSON (CFFunc args ret) = object [ "Func" .= object [ "args" .= map coreFnTypeToJSON args, "ret" .= coreFnTypeToJSON ret ] ]
+coreFnTypeToJSON (CFRecord fields) = object [ "Record" .= object (map (\(k, v) -> (Data.Aeson.Key.fromString (Language.PureScript.PSString.decodeStringWithReplacement k) Data.Aeson..= coreFnTypeToJSON v)) fields) ]
+coreFnTypeToJSON (CFAdt (Qualified (ByModuleName mn) name)) =
+  let ModuleName mn' = mn
+      parts = T.splitOn (T.pack ".") mn' ++ [runProperName name]
+  in object [ "ADT" .= toJSON parts ]
+coreFnTypeToJSON (CFAdt (Qualified _ name)) =
+  object [ "ADT" .= toJSON [runProperName name] ]
 coreFnTypeToJSON CFAny = toJSON "Any"
 
 annToJSON :: Ann -> Value
@@ -136,6 +144,7 @@ moduleToJSON v m = object
   , "reExports"  .= reExportsToJSON (moduleReExports m)
   , "foreign"    .= map identToJSON (moduleForeign m)
   , "decls"      .= map bindToJSON (moduleDecls m)
+  , "dataDecls"  .= map dataDeclToJSON (moduleDataDecls m)
   , "builtWith"  .= toJSON (showVersion v)
   , "comments"   .= map toJSON (moduleComments m)
   ]
@@ -165,8 +174,20 @@ bindToJSON (Rec bs)
                                       [ "identifier"  .= identToJSON n
                                       , "annotation"   .= annToJSON ann
                                       , "expression"   .= exprToJSON e
-                                      ]) bs
+                                       ]) bs
     ]
+
+dataDeclToJSON :: DataDecl -> Value
+dataDeclToJSON (DataDecl name ctors) = object
+  [ "typeName" .= properNameToJSON name
+  , "constructors" .= map dataConstructorToJSON ctors
+  ]
+
+dataConstructorToJSON :: DataConstructor -> Value
+dataConstructorToJSON (DataConstructor name fields) = object
+  [ "constructorName" .= properNameToJSON name
+  , "fieldTypes" .= map coreFnTypeToJSON fields
+  ]
 
 recordToJSON :: (a -> Value) -> [(PSString, a)] -> Value
 recordToJSON f = toJSON . map (toJSON *** f)

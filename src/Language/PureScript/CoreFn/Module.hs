@@ -7,7 +7,18 @@ import Data.Map.Strict (Map)
 import Language.PureScript.AST.SourcePos (SourceSpan)
 import Language.PureScript.Comments (Comment)
 import Language.PureScript.CoreFn.Expr (Bind)
-import Language.PureScript.Names (Ident, ModuleName)
+import Language.PureScript.CoreFn.Ann (CoreFnType)
+import Language.PureScript.Names (Ident, ModuleName, ProperName, ProperNameType(..))
+
+data DataDecl = DataDecl
+  { dataDeclName :: ProperName 'TypeName
+  , dataDeclConstructors :: [DataConstructor]
+  } deriving (Show)
+
+data DataConstructor = DataConstructor
+  { dataCtorName :: ProperName 'ConstructorName
+  , dataCtorFields :: [CoreFnType]
+  } deriving (Show)
 
 -- |
 -- The CoreFn module representation
@@ -22,4 +33,5 @@ data Module a = Module
   , moduleReExports :: Map ModuleName [Ident]
   , moduleForeign :: [Ident]
   , moduleDecls :: [Bind a]
+  , moduleDataDecls :: [DataDecl]
   } deriving (Functor, Show)
