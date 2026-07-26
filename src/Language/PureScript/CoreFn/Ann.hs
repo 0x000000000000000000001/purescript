@@ -7,6 +7,7 @@ import Language.PureScript.Comments (Comment)
 import Language.PureScript.CoreFn.Meta (Meta)
 import Language.PureScript.PSString (PSString)
 import Language.PureScript.Names (Qualified, ProperName, ProperNameType(..))
+import Data.Text (Text)
 import GHC.Generics (Generic)
 import Control.DeepSeq (NFData)
 
@@ -22,7 +23,8 @@ data CoreFnType
   | CFArray CoreFnType
   | CFFunc [CoreFnType] CoreFnType
   | CFRecord [(PSString, CoreFnType)]
-  | CFAdt (Qualified (ProperName 'TypeName))
+  | CFAdt (Qualified (ProperName 'TypeName)) [CoreFnType]
+  | CFTypeVar Text
   | CFAny
   deriving (Show, Eq, Ord, Generic)
 

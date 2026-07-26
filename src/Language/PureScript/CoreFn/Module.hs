@@ -3,6 +3,7 @@ module Language.PureScript.CoreFn.Module where
 import Prelude
 
 import Data.Map.Strict (Map)
+import Data.Text (Text)
 
 import Language.PureScript.AST.SourcePos (SourceSpan)
 import Language.PureScript.Comments (Comment)
@@ -12,6 +13,7 @@ import Language.PureScript.Names (Ident, ModuleName, ProperName, ProperNameType(
 
 data DataDecl = DataDecl
   { dataDeclName :: ProperName 'TypeName
+  , dataDeclTypeVars :: [Text]
   , dataDeclConstructors :: [DataConstructor]
   } deriving (Show)
 

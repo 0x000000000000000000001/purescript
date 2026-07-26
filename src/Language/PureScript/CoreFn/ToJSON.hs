@@ -62,12 +62,12 @@ coreFnTypeToJSON CFChar = toJSON "Char"
 coreFnTypeToJSON (CFArray ty) = object [ "Array" .= coreFnTypeToJSON ty ]
 coreFnTypeToJSON (CFFunc args ret) = object [ "Func" .= object [ "args" .= map coreFnTypeToJSON args, "ret" .= coreFnTypeToJSON ret ] ]
 coreFnTypeToJSON (CFRecord fields) = object [ "Record" .= object (map (\(k, v) -> (Data.Aeson.Key.fromString (Language.PureScript.PSString.decodeStringWithReplacement k) Data.Aeson..= coreFnTypeToJSON v)) fields) ]
-coreFnTypeToJSON (CFAdt (Qualified (ByModuleName mn) name)) =
+coreFnTypeToJSON (CFAdt (Qualified (ByModuleName mn) name) args) =
   let ModuleName mn' = mn
       parts = T.splitOn (T.pack ".") mn' ++ [runProperName name]
-  in object [ "ADT" .= toJSON parts ]
-coreFnTypeToJSON (CFAdt (Qualified _ name)) =
-  object [ "ADT" .= toJSON [runProperName name] ]
+  in object [ "ADT" .= object [ "path" .= toJSON parts, "args" .= toJSON (map coreFnTypeToJSON args) ] ]
+coreFnTypeToJSON (CFAdt (Qualified _ name) args) = object [ "ADT" .= object [ "path" .= toJSON [runProperName name], "args" .= toJSON (map coreFnTypeToJSON args) ] ]
+coreFnTypeToJSON (CFTypeVar name) = object [ "TypeVar" .= toJSON name ]
 coreFnTypeToJSON CFAny = toJSON "Any"
 
 annToJSON :: Ann -> Value
@@ -178,8 +178,9 @@ bindToJSON (Rec bs)
     ]
 
 dataDeclToJSON :: DataDecl -> Value
-dataDeclToJSON (DataDecl name ctors) = object
+dataDeclToJSON (DataDecl name typeVars ctors) = object
   [ "typeName" .= properNameToJSON name
+  , "typeVars" .= toJSON typeVars
   , "constructors" .= map dataConstructorToJSON ctors
   ]
 
