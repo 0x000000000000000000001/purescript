@@ -11,7 +11,7 @@ import Prelude
 
 import Control.Applicative ((<|>))
 
-import Data.Aeson (FromJSON(..), Object, Value(..), withObject, withText, (.:), (.:?))
+import Data.Aeson (FromJSON(..), Object, Value(..), withObject, withText, (.:), (.:?), (.!=))
 import Data.Aeson.Types (Parser, listParser)
 import Data.Map.Strict qualified as M
 import Data.Text (Text)
@@ -21,9 +21,9 @@ import Data.Version (Version, parseVersion)
 
 import Language.PureScript.AST.SourcePos (SourceSpan(..))
 import Language.PureScript.AST.Literals (Literal(..))
-import Language.PureScript.CoreFn.Ann (Ann)
+import Language.PureScript.CoreFn.Ann (Ann, ssAnn)
 import Language.PureScript.CoreFn (Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Guard, Meta(..), Module(..), CoreFnType(..))
-import Language.PureScript.Names (Ident(..), ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..), unusedIdent)
+import Language.PureScript.Names (Ident(..), ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..), unusedIdent, runIdent)
 import Language.PureScript.PSString (PSString)
 
 import Text.ParserCombinators.ReadP (readP_to_S)
@@ -163,7 +163,15 @@ moduleFromJSON = withObject "Module" moduleFromObj
     moduleExports <- o .: "exports" >>= listParser identFromJSON
     moduleReExports <- o .: "reExports" >>= reExportsFromJSON
     moduleDecls <- o .: "decls" >>= listParser (bindFromJSON modulePath)
-    moduleForeign <- o .: "foreign" >>= listParser identFromJSON
+    foreignIdents <- o .: "foreign" >>= listParser identFromJSON
+    foreignAnnsRaw <- o .:? "foreignAnnotations" .!= M.empty :: Parser (M.Map String Value)
+    moduleForeign <- mapM (\ident -> do
+          let key = T.unpack (runIdent ident)
+          ann <- case M.lookup key foreignAnnsRaw of
+                   Just val -> annFromJSON modulePath val
+                   Nothing -> return (ssAnn moduleSourceSpan)
+          return (ann, ident)
+      ) foreignIdents
     moduleComments <- o .: "comments" >>= listParser parseJSON
     let moduleDataDecls = []
     return (version, Module {..})
@@ -181,7 +189,7 @@ moduleFromJSON = withObject "Module" moduleFromObj
       mn  <- o .: "moduleName" >>= moduleNameFromJSON
       return (ann, mn))
 
-  reExportsFromJSON :: Value -> Parser (M.Map ModuleName [Ident])
+
   reExportsFromJSON = fmap (M.map (map Ident)) . parseJSON
 
 bindFromJSON :: FilePath -> Value -> Parser (Bind Ann)

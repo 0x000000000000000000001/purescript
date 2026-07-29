@@ -369,7 +369,7 @@ checkForeignDecls m path = do
                       errorInvalidForeignIdentifiers
                       (pure . S.fromList)
                       (parseIdents foreignIdentsStrs)
-    let importedIdents = S.fromList (CF.moduleForeign m)
+    let importedIdents = S.fromList (map snd $ CF.moduleForeign m)
 
     let unusedFFI = foreignIdents S.\\ importedIdents
     unless (null unusedFFI) $

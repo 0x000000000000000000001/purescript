@@ -104,7 +104,7 @@ lookupIdent name = do
 renameInModule :: Module Ann -> (M.Map Ident Ident, Module Ann)
 renameInModule m@(Module _ _ _ _ _ exports _ foreigns decls _) = (rsBoundNames, m { moduleExports, moduleDecls })
   where
-  ((moduleDecls, moduleExports), RenameState{..}) = runRename foreigns $
+  ((moduleDecls, moduleExports), RenameState{..}) = runRename (map snd foreigns) $
     (,) <$> renameInDecls decls <*> traverse lookupIdent exports
 
 -- |

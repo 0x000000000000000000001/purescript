@@ -10,10 +10,12 @@ import Data.Maybe (mapMaybe)
 import Data.Tuple (swap)
 import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as M
+import Data.Set qualified as S
 
 import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.AST.SourcePos (pattern NullSourceSpan, SourceSpan(..))
 import Language.PureScript.AST.Traversals (everythingOnValues)
+import Data.List (nubBy)
 import Language.PureScript.Comments (Comment)
 import Language.PureScript.CoreFn.Ann (Ann, ssAnn, CoreFnType(..))
 import Language.PureScript.CoreFn.Binders (Binder(..))
@@ -21,11 +23,11 @@ import Language.PureScript.CoreFn.Expr (Bind(..), CaseAlternative(..), Expr(..),
 import Language.PureScript.CoreFn.Meta (ConstructorType(..), Meta(..))
 import Language.PureScript.CoreFn.Module (Module(..), DataDecl(..), DataConstructor(..))
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.Environment (DataDeclType(..), TypeKind(..), Environment(..), NameKind(..), isDictTypeName, lookupConstructor, lookupValue, TypeClassData(..))
+import Language.PureScript.Environment (DataDeclType(..), TypeKind(..), Environment(..), NameKind(..), isDictTypeName, lookupConstructor, lookupValue, TypeClassData(..), typeClassMembers)
 import Language.PureScript.Label (Label(..))
-import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), getQual, coerceProperName, runIdent)
+import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), getQual, runIdent)
 import Language.PureScript.PSString (PSString, mkString)
-import Language.PureScript.Types (pattern REmptyKinded, SourceType, Type(..), Constraint(..))
+import Language.PureScript.Types (pattern REmptyKinded, SourceType, Type(..), replaceAllTypeVars, constraintClass, Constraint(..))
 import Language.PureScript.AST qualified as A
 import Language.PureScript.Constants.Prim qualified as C
 
@@ -38,7 +40,7 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
       imports' = dedupeImports imports
       exps' = ordNub $ concatMap exportToCoreFn exps
       reExps = M.map ordNub $ M.unionsWith (++) (mapMaybe (fmap reExportsToCoreFn . toReExportRef) exps)
-      externs = ordNub $ mapMaybe externToCoreFn decls
+      externs = nubBy ((==) `on` snd) $ mapMaybe (externToCoreFn env) decls
       decls' = concatMap declToCoreFn decls
       dataDecls' = concatMap dataDeclToCoreFn decls
   in Module modSS coms mn (spanName modSS) imports' exps' reExps externs decls' dataDecls'
@@ -258,9 +260,9 @@ importToCoreFn (A.ImportDeclaration (ss, com) name _ _) = Just ((ss, com, Nothin
 importToCoreFn _ = Nothing
 
 -- | Desugars foreign declarations from AST to CoreFn representation.
-externToCoreFn :: A.Declaration -> Maybe Ident
-externToCoreFn (A.ExternDeclaration _ name _) = Just name
-externToCoreFn _ = Nothing
+externToCoreFn :: Environment -> A.Declaration -> Maybe (Ann, Ident)
+externToCoreFn env (A.ExternDeclaration (ss, com) name ty) = Just ((ss, com, Just (simplifyType env ty), Just IsForeign), name)
+externToCoreFn _ _ = Nothing
 
 -- | Desugars export declarations references from AST to CoreFn representation.
 -- CoreFn modules only export values, so all data constructors, instances and
@@ -282,20 +284,26 @@ properToIdent = Ident . runProperName
 
 -- | Simplifies a SourceType into a CoreFnType
 simplifyType :: Environment -> SourceType -> CoreFnType
-simplifyType env (ForAll _ _ _ _ ty _) = simplifyType env ty
-simplifyType env (ConstrainedType _ constraint ty) =
-  let retT = simplifyType env ty
-      dictType = case M.lookup (constraintClass constraint) (typeClasses env) of
-                   Just tcData ->
-                     let fields = typeClassMembers tcData
-                         toLabel (ident, ty', _) = (mkString (runIdent ident), simplifyType env ty')
-                     in CFRecord (map toLabel fields)
-                   _ -> CFAny
+simplifyType = simplifyType' S.empty S.empty
+
+simplifyType' :: S.Set (Qualified (ProperName 'TypeName)) -> S.Set (Qualified (ProperName 'ClassName)) -> Environment -> SourceType -> CoreFnType
+simplifyType' visited visitedClasses env (ForAll _ _ _ _ ty _) = simplifyType' visited visitedClasses env ty
+simplifyType' visited visitedClasses env (ConstrainedType _ constraint ty) =
+  let retT = simplifyType' visited visitedClasses env ty
+      className = constraintClass constraint
+      dictType = 
+        if S.member className visitedClasses then CFAny
+        else case M.lookup className (typeClasses env) of
+               Just tcData ->
+                 let fields = typeClassMembers tcData
+                     toLabel (ident, ty', _) = (mkString (runIdent ident), simplifyType' visited (S.insert className visitedClasses) env ty')
+                 in CFRecord (map toLabel fields)
+               _ -> CFAny
   in case retT of
        CFFunc args' ret' -> CFFunc (dictType : args') ret'
        _ -> CFFunc [dictType] retT
-simplifyType env (ParensInType _ ty) = simplifyType env ty
-simplifyType env (TypeConstructor _ qname@(Qualified _ (ProperName name)))
+simplifyType' visited visitedClasses env (ParensInType _ ty) = simplifyType' visited visitedClasses env ty
+simplifyType' visited visitedClasses env (TypeConstructor _ qname@(Qualified _ (ProperName name)))
   | name == "Int"     = CFInt
   | name == "Number"  = CFNumber
   | name == "String"  = CFString
@@ -304,49 +312,54 @@ simplifyType env (TypeConstructor _ qname@(Qualified _ (ProperName name)))
   | otherwise =
       case M.lookup qname (types env) of
         Just (_, DataType Data _ _) -> CFAdt qname []
-        _ -> case M.lookup (fmap coerceProperName qname) (typeClasses env) of
-               Just tcData ->
-                 let fields = typeClassMembers tcData
-                     toLabel (ident, ty, _) = (mkString (runIdent ident), simplifyType env ty)
-                 in CFRecord (map toLabel fields)
-               _ -> CFAny
-simplifyType env (TypeApp _ (TypeConstructor _ (Qualified _ (ProperName name))) inner)
-  | name == "Array" = CFArray (simplifyType env inner)
-simplifyType env (TypeApp _ (TypeApp _ (TypeConstructor _ (Qualified _ (ProperName name))) arg) ret)
+        Just (_, ExternData _) -> CFAdt qname []
+        Just (_, DataType Newtype _ [(_, [underlyingType])]) -> 
+            if S.member qname visited then CFAdt qname []
+            else simplifyType' (S.insert qname visited) visitedClasses env underlyingType
+        _ -> CFAny
+simplifyType' visited visitedClasses env (TypeApp _ (TypeConstructor _ (Qualified _ (ProperName name))) inner)
+  | name == "Array" = CFArray (simplifyType' visited visitedClasses env inner)
+simplifyType' visited visitedClasses env (TypeApp _ (TypeApp _ (TypeConstructor _ (Qualified _ (ProperName name))) arg) ret)
   | name == "Function" =
       let
-        argT = simplifyType env arg
-        retT = simplifyType env ret
+        argT = simplifyType' visited visitedClasses env arg
+        retT = simplifyType' visited visitedClasses env ret
       in case retT of
            CFFunc args' ret' -> CFFunc (argT : args') ret'
            _ -> CFFunc [argT] retT
-simplifyType env (TypeApp _ (TypeConstructor _ (Qualified _ (ProperName name))) row)
+simplifyType' visited visitedClasses env (TypeApp _ (TypeConstructor _ (Qualified _ (ProperName name))) row)
   | name == "Record" =
       let
         rowToFields (RCons _ (Label l) ty rest) = do
           fields <- rowToFields rest
-          return ((l, simplifyType env ty) : fields)
+          return ((l, simplifyType' visited visitedClasses env ty) : fields)
         rowToFields (REmpty _) = Just []
         rowToFields _ = Nothing
       in case rowToFields row of
            Just fields -> CFRecord fields
            Nothing -> CFAny
-simplifyType env tApp@(TypeApp _ _ _) =
+simplifyType' visited visitedClasses env tApp@(TypeApp _ _ _) =
   let (base, args) = collectTypeArgs tApp
-  in case base of
-       TypeConstructor _ qname -> 
-         case M.lookup qname (types env) of
-           Just (_, DataType Data _ _) -> CFAdt qname (map (simplifyType env) args)
-           _ -> simplifyType env base
-       _ -> simplifyType env base
+   in case base of
+        TypeConstructor _ qname -> 
+          case M.lookup qname (types env) of
+            Just (_, DataType Data _ _) -> CFAdt qname (map (simplifyType' visited visitedClasses env) args)
+            Just (_, ExternData _) -> CFAdt qname (map (simplifyType' visited visitedClasses env) args)
+            Just (_, DataType Newtype typeVars [(_, [underlyingType])]) -> 
+                if S.member qname visited then CFAdt qname (map (simplifyType' visited visitedClasses env) args)
+                else let subst = zip (map (\(v, _, _) -> v) typeVars) args
+                         underlyingTypeSubst = replaceAllTypeVars subst underlyingType
+                     in simplifyType' (S.insert qname visited) visitedClasses env underlyingTypeSubst
+            _ -> simplifyType' visited visitedClasses env base
+        _ -> simplifyType' visited visitedClasses env base
   where
     collectTypeArgs :: SourceType -> (SourceType, [SourceType])
     collectTypeArgs (TypeApp _ t1 t2) =
       let (base, args) = collectTypeArgs t1
       in (base, args ++ [t2])
     collectTypeArgs t = (t, [])
-simplifyType env (KindApp _ ty _) = simplifyType env ty
-simplifyType env (KindedType _ ty _) = simplifyType env ty
-simplifyType _ (TypeVar _ name) = CFTypeVar name
-simplifyType _ (Skolem _ name _ _ _) = CFTypeVar name
-simplifyType _ _ = CFAny
+simplifyType' visited visitedClasses env (KindApp _ ty _) = simplifyType' visited visitedClasses env ty
+simplifyType' visited visitedClasses env (KindedType _ ty _) = simplifyType' visited visitedClasses env ty
+simplifyType' _ _ _ (TypeVar _ name) = CFTypeVar name
+simplifyType' _ _ _ (Skolem _ name _ _ _) = CFTypeVar name
+simplifyType' _ _ _ _ = CFAny

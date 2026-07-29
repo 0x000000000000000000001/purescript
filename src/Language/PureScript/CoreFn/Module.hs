@@ -33,7 +33,7 @@ data Module a = Module
   , moduleImports :: [(a, ModuleName)]
   , moduleExports :: [Ident]
   , moduleReExports :: Map ModuleName [Ident]
-  , moduleForeign :: [Ident]
+  , moduleForeign :: [(a, Ident)]
   , moduleDecls :: [Bind a]
   , moduleDataDecls :: [DataDecl]
   } deriving (Functor, Show)

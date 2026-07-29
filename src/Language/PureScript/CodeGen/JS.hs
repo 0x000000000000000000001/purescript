@@ -72,7 +72,7 @@ moduleToJs (Module _ coms mn _ imps exps reExps foreigns decls _) foreignInclude
           = map (importToJs mnLookup)
           . filter (flip S.member usedModuleNames)
           $ (\\ (mn : C.primModules)) imps'
-    let foreignExps = exps `intersect` foreigns
+    let foreignExps = exps `intersect` (map snd foreigns)
     let standardExps = exps \\ foreignExps
     let reExps' = M.toList (M.withoutKeys reExps (S.fromList C.primModules))
     let jsExports

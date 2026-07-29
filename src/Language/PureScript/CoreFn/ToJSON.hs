@@ -142,7 +142,8 @@ moduleToJSON v m = object
   , "imports"    .= map importToJSON (moduleImports m)
   , "exports"    .= map identToJSON (moduleExports m)
   , "reExports"  .= reExportsToJSON (moduleReExports m)
-  , "foreign"    .= map identToJSON (moduleForeign m)
+  , "foreign"    .= map (identToJSON . snd) (moduleForeign m)
+  , "foreignAnnotations" .= object (map (\(ann, ident) -> T.unpack (Language.PureScript.Names.runIdent ident) .= annToJSON ann) (moduleForeign m))
   , "decls"      .= map bindToJSON (moduleDecls m)
   , "dataDecls"  .= map dataDeclToJSON (moduleDataDecls m)
   , "builtWith"  .= toJSON (showVersion v)
@@ -157,6 +158,8 @@ moduleToJSON v m = object
 
   reExportsToJSON :: M.Map ModuleName [Ident] -> Value
   reExportsToJSON = toJSON . M.map (map runIdent)
+
+
 
 bindToJSON :: Bind Ann -> Value
 bindToJSON (NonRec ann n e)
