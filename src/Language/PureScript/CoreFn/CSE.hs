@@ -2,7 +2,7 @@
 -- | This module performs limited common subexpression elimination
 module Language.PureScript.CoreFn.CSE (optimizeCommonSubexpressions) where
 
-import Protolude hiding (pass)
+import Protolude hiding (pass, Meta)
 
 import Control.Lens (At(..), makeLenses, non, view, (%~), (.=), (.~), (<>~), (^.))
 import Control.Monad.Supply (Supply)
@@ -20,7 +20,7 @@ import Data.Semigroup.Generic (GenericSemigroupMonoid(..))
 import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.AST.SourcePos (nullSourceSpan)
 import Language.PureScript.Constants.Libs qualified as C
-import Language.PureScript.CoreFn.Ann (Ann)
+import Language.PureScript.CoreFn.Ann (Ann, CoreFnType)
 import Language.PureScript.CoreFn.Binders (Binder(..))
 import Language.PureScript.CoreFn.Expr (Bind(..), CaseAlternative(..), Expr(..))
 import Language.PureScript.CoreFn.Meta (Meta(IsSyntheticApp))
@@ -169,10 +169,19 @@ makeLenses ''CSESummary
 makeLenses ''CSEEnvironment
 
 -- |
+-- The annotation used for CSE equivalence checking.
+-- We strip source spans and comments, but retain types and metadata.
+--
+type CSEAnn = (Maybe CoreFnType, Maybe Meta)
+
+toCSEAnn :: Ann -> CSEAnn
+toCSEAnn (_, _, ty, meta) = (ty, meta)
+
+-- |
 -- Map from the shape of an expression to an identifier created to represent
 -- that expression, organized by scope depth.
 --
-type CSEState = IM.MonoidalIntMap (M.Map (Expr ()) Ident)
+type CSEState = IM.MonoidalIntMap (M.Map (Expr CSEAnn) Ident)
 
 -- |
 -- The monad in which CSE takes place.
@@ -236,7 +245,7 @@ newScopeWithIdents isTopLevel idents = newScope isTopLevel . flip (withBoundIden
 -- Produce, or retrieve from the state, an identifier for referencing the given
 -- expression, at and below the given depth.
 --
-generateIdentFor :: (HasCSEState m, MonadSupply m) => Int -> Expr () -> m (Bool, Ident)
+generateIdentFor :: (HasCSEState m, MonadSupply m) => Int -> Expr CSEAnn -> m (Bool, Ident)
 generateIdentFor d e = at d . non mempty . at e %%<~ \case
   Nothing    -> freshIdent (nameHint e) <&> \ident -> ((True, ident), Just ident)
   Just ident -> pure ((False, ident), Just ident)
@@ -286,7 +295,7 @@ floatExpr
 floatExpr topLevelQB = \case
   (e, w@CSESummary{ _noFloatWithin = Nothing, .. }) -> do
     let deepestScope = if IS.null _scopesUsed then 0 else IS.findMax _scopesUsed
-    (isNew, ident) <- generateIdentFor deepestScope (void e)
+    (isNew, ident) <- generateIdentFor deepestScope (fmap toCSEAnn e)
     topLevel <- view deepestTopLevelScope
     let qb = if deepestScope > topLevel then ByNullSourcePos else topLevelQB
     let w' = w
