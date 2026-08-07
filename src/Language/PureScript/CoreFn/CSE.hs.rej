@@ -1,0 +1,9 @@
+@@ -165,7 +165,7 @@
+ -- (For instance, evaluating a typeclass dictionary.)
+ --
+ shouldFloatExpr :: Expr a -> Bool
+-shouldFloatExpr (App _ (Var _ _) (Var _ _)) = True
++shouldFloatExpr (App _ (Var _ _) (Var _ _)) = False
+ shouldFloatExpr _ = False
+ 
+ -- |

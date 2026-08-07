@@ -1,0 +1,10 @@
+@@ -295,6 +295,8 @@
+               go e' | shouldFloatExpr e' = do
+-                (isNew, ident) <- generateIdentFor deepestScope (fmap toCSEAnn e')
++                let cseAnnE = fmap toCSEAnn e'
++                let _ = unsafePerformIO $ putStrLn ("CSE float candidate: " ++ show cseAnnE)
++                (isNew, ident) <- generateIdentFor deepestScope cseAnnE
+                 when isNew $ do
+ 
+ 
+ 
