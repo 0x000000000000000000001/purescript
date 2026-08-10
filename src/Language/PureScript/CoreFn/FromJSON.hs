@@ -23,8 +23,8 @@ import Language.PureScript.AST.SourcePos (SourceSpan(..))
 import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.CoreFn.Ann (Ann, ssAnn)
 import Language.PureScript.CoreFn (Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Guard, Meta(..), Module(..), CoreFnType(..))
-import Language.PureScript.Names (Ident(..), ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..), unusedIdent, runIdent)
-import Language.PureScript.PSString (PSString)
+import Language.PureScript.Names (Ident(..), ModuleName(..), ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), unusedIdent, runIdent, pattern ByNullSourcePos)
+import Language.PureScript.PSString (PSString, mkString)
 
 import Text.ParserCombinators.ReadP (readP_to_S)
 
@@ -66,23 +66,85 @@ metaFromJSON v = withObject "Meta" metaFromObj v
 
 coreFnTypeFromJSON :: Value -> Parser (Maybe CoreFnType)
 coreFnTypeFromJSON Null = return Nothing
-coreFnTypeFromJSON v = case v of
-  Data.Aeson.String "Int" -> return $ Just CFInt
-  Data.Aeson.String "Number" -> return $ Just CFNumber
-  Data.Aeson.String "String" -> return $ Just CFString
-  Data.Aeson.String "Boolean" -> return $ Just CFBoolean
-  Data.Aeson.String "Char" -> return $ Just CFChar
-  Data.Aeson.String "Any" -> return $ Just CFAny
-  Data.Aeson.Object o -> do
-    arr <- o .:? "Array"
-    case arr of
-      Just arrV -> do
-        inner <- coreFnTypeFromJSON arrV
-        case inner of
-          Just innerTy -> return $ Just (CFArray innerTy)
-          Nothing -> return $ Just CFAny
-      Nothing -> return $ Just CFAny
-  _ -> return $ Just CFAny
+coreFnTypeFromJSON (Object o) = do
+  typ :: Text <- o .: "type"
+  case typ of
+    "Int" -> return $ Just CFInt
+    "Number" -> return $ Just CFNumber
+    "String" -> return $ Just CFString
+    "Boolean" -> return $ Just CFBoolean
+    "Char" -> return $ Just CFChar
+    "Unit" -> return $ Just CFUnit
+    "Any" -> return $ Just CFAny
+    "TypeLevelString" -> do
+      val <- o .: "value"
+      return $ Just (CFTypeLevelString (Language.PureScript.PSString.mkString val))
+    "Array" -> do
+      inner <- o .: "element" >>= coreFnTypeFromJSON
+      return $ CFArray <$> inner
+    "TypeVar" -> do
+      name <- o .: "name"
+      return $ Just (CFTypeVar name)
+    "Adt" -> do
+      fqn <- o .: "fqn"
+      argsVal <- o .: "args"
+      args <- mapM (\v -> coreFnTypeFromJSON v >>= \case Just a -> return a; Nothing -> fail "Expected CoreFnType") argsVal
+      let qname = case fqn of
+            [name] -> Qualified ByNullSourcePos (ProperName name)
+            _ -> let mn = ModuleName (T.intercalate "." (init fqn))
+                     name = ProperName (last fqn)
+                 in Qualified (ByModuleName mn) name
+      return $ Just (CFAdt qname args)
+    "TypeApp" -> do
+      constructor <- o .: "constructor" >>= \v -> coreFnTypeFromJSON v >>= \case Just a -> return a; Nothing -> fail "Expected CoreFnType"
+      argsVal <- o .: "args"
+      args <- mapM (\v -> coreFnTypeFromJSON v >>= \case Just a -> return a; Nothing -> fail "Expected CoreFnType") argsVal
+      return $ Just (CFTypeApp constructor args)
+    "Func" -> do
+      argsVal <- o .: "args"
+      args <- mapM (\v -> coreFnTypeFromJSON v >>= \case Just a -> return a; Nothing -> fail "Expected CoreFnType") argsVal
+      ret <- o .: "ret" >>= \v -> coreFnTypeFromJSON v >>= \case Just a -> return a; Nothing -> fail "Expected CoreFnType"
+      return $ Just (CFFunc args ret)
+    "Row" -> do
+      fieldsVal <- o .: "fields"
+      fields <- mapM parseField fieldsVal
+      tailTy <- o .:? "tail" >>= \case
+                  Just Null -> return Nothing
+                  Just v -> coreFnTypeFromJSON v
+                  Nothing -> return Nothing
+      return $ Just (CFRow fields tailTy)
+    "Record" -> do
+      row <- o .: "row" >>= \v -> coreFnTypeFromJSON v >>= \case Just a -> return a; Nothing -> fail "Expected CoreFnType"
+      return $ Just (CFRecord row)
+    "ForAll" -> do
+      vars <- o .: "vars"
+      body <- o .: "body" >>= \v -> coreFnTypeFromJSON v >>= \case Just a -> return a; Nothing -> fail "Expected CoreFnType"
+      return $ Just (CFForAll vars body)
+    "ConstrainedType" -> do
+      constraintsVal <- o .: "constraints"
+      constraints <- mapM parseConstraint constraintsVal
+      body <- o .: "body" >>= \v -> coreFnTypeFromJSON v >>= \case Just a -> return a; Nothing -> fail "Expected CoreFnType"
+      return $ Just (CFConstrainedType constraints body)
+    _ -> return $ Just CFAny
+  where
+    parseField :: Value -> Parser (PSString, CoreFnType)
+    parseField = withObject "Field" $ \obj -> do
+      l <- obj .: "label"
+      t <- obj .: "type" >>= \v -> coreFnTypeFromJSON v >>= \case Just a -> return a; Nothing -> fail "Expected CoreFnType"
+      return (Language.PureScript.PSString.mkString l, t)
+    
+    parseConstraint :: Value -> Parser (Qualified (ProperName 'ClassName), [CoreFnType])
+    parseConstraint = withObject "Constraint" $ \obj -> do
+      fqn <- obj .: "fqn"
+      argsVal <- obj .: "args"
+      args <- mapM (\v -> coreFnTypeFromJSON v >>= \case Just a -> return a; Nothing -> fail "Expected CoreFnType") argsVal
+      let qname = case fqn of
+            [name] -> Qualified ByNullSourcePos (ProperName name)
+            _ -> let mn = ModuleName (T.intercalate "." (init fqn))
+                     name = ProperName (last fqn)
+                 in Qualified (ByModuleName mn) name
+      return (qname, args)
+coreFnTypeFromJSON _ = return $ Just CFAny
 
 annFromJSON :: FilePath -> Value -> Parser Ann
 annFromJSON modulePath = withObject "Ann" annFromObj
