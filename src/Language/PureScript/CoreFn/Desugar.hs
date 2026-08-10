@@ -23,10 +23,10 @@ import Language.PureScript.CoreFn.Expr (Bind(..), CaseAlternative(..), Expr(..),
 import Language.PureScript.CoreFn.Meta (ConstructorType(..), Meta(..))
 import Language.PureScript.CoreFn.Module (Module(..), DataDecl(..), DataConstructor(..))
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.Environment (DataDeclType(..), TypeKind(..), Environment(..), NameKind(..), isDictTypeName, lookupConstructor, lookupValue, TypeClassData(..), typeClassMembers)
+import Language.PureScript.Environment (DataDeclType(..), TypeKind(..), Environment(..), NameKind(..), isDictTypeName, lookupConstructor, lookupValue)
 import Language.PureScript.Label (Label(..))
-import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), getQual, runIdent)
-import Language.PureScript.PSString (PSString, mkString)
+import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), getQual)
+import Language.PureScript.PSString (PSString)
 import Language.PureScript.Types (pattern REmptyKinded, SourceType, Type(..), replaceAllTypeVars, constraintClass, Constraint(..))
 import Language.PureScript.AST qualified as A
 import Language.PureScript.Constants.Prim qualified as C
@@ -287,28 +287,28 @@ simplifyType :: Environment -> SourceType -> CoreFnType
 simplifyType = simplifyType' S.empty S.empty
 
 simplifyType' :: S.Set (Qualified (ProperName 'TypeName)) -> S.Set (Qualified (ProperName 'ClassName)) -> Environment -> SourceType -> CoreFnType
-simplifyType' visited visitedClasses env (ForAll _ _ _ _ ty _) = simplifyType' visited visitedClasses env ty
+simplifyType' visited visitedClasses env (ForAll _ _ ident _ ty _) = 
+  let (vars, body) = collectForAlls [ident] ty
+  in CFForAll vars (simplifyType' visited visitedClasses env body)
+  where
+    collectForAlls vars (ForAll _ _ i _ t _) = collectForAlls (vars ++ [i]) t
+    collectForAlls vars t = (vars, t)
 simplifyType' visited visitedClasses env (ConstrainedType _ constraint ty) =
-  let retT = simplifyType' visited visitedClasses env ty
-      className = constraintClass constraint
-      dictType = 
-        if S.member className visitedClasses then CFAny
-        else case M.lookup className (typeClasses env) of
-               Just tcData ->
-                 let fields = typeClassMembers tcData
-                     toLabel (ident, ty', _) = (mkString (runIdent ident), simplifyType' visited (S.insert className visitedClasses) env ty')
-                 in CFRecord (map toLabel fields)
-               _ -> CFAny
-  in case retT of
-       CFFunc args' ret' -> CFFunc (dictType : args') ret'
-       _ -> CFFunc [dictType] retT
+  let (constraints, body) = collectConstraints [constraint] ty
+      constraints' = map (\c -> (constraintClass c, map (simplifyType' visited visitedClasses env) (constraintArgs c))) constraints
+  in CFConstrainedType constraints' (simplifyType' visited visitedClasses env body)
+  where
+    collectConstraints constraints (ConstrainedType _ c t) = collectConstraints (constraints ++ [c]) t
+    collectConstraints constraints t = (constraints, t)
 simplifyType' visited visitedClasses env (ParensInType _ ty) = simplifyType' visited visitedClasses env ty
+simplifyType' _ _ _ (TypeLevelString _ s) = CFTypeLevelString s
 simplifyType' visited visitedClasses env (TypeConstructor _ qname@(Qualified _ (ProperName name)))
   | name == "Int"     = CFInt
   | name == "Number"  = CFNumber
   | name == "String"  = CFString
   | name == "Boolean" = CFBoolean
   | name == "Char"    = CFChar
+  | name == "Unit"    = CFUnit
   | otherwise =
       case M.lookup qname (types env) of
         Just (_, DataType Data _ _) -> CFAdt qname []
@@ -331,12 +331,14 @@ simplifyType' visited visitedClasses env (TypeApp _ (TypeConstructor _ (Qualifie
   | name == "Record" =
       let
         rowToFields (RCons _ (Label l) ty rest) = do
-          fields <- rowToFields rest
-          return ((l, simplifyType' visited visitedClasses env ty) : fields)
-        rowToFields (REmpty _) = Just []
-        rowToFields _ = Nothing
+          (fields, tailTy) <- rowToFields rest
+          return ((l, simplifyType' visited visitedClasses env ty) : fields, tailTy)
+        rowToFields (REmpty _) = Just ([], Nothing)
+        rowToFields (TypeVar _ tv) = Just ([], Just (CFTypeVar tv))
+        rowToFields (Skolem _ tv _ _ _) = Just ([], Just (CFTypeVar tv))
+        rowToFields _ = Just ([], Just CFAny)
       in case rowToFields row of
-           Just fields -> CFRecord fields
+           Just (fields, tailTy) -> CFRecord (CFRow fields tailTy)
            Nothing -> CFAny
 simplifyType' visited visitedClasses env tApp@(TypeApp _ _ _) =
   let (base, args) = collectTypeArgs tApp
@@ -350,14 +352,27 @@ simplifyType' visited visitedClasses env tApp@(TypeApp _ _ _) =
                 else let subst = zip (map (\(v, _, _) -> v) typeVars) args
                          underlyingTypeSubst = replaceAllTypeVars subst underlyingType
                      in simplifyType' (S.insert qname visited) visitedClasses env underlyingTypeSubst
-            _ -> simplifyType' visited visitedClasses env base
-        _ -> simplifyType' visited visitedClasses env base
+            _ -> CFTypeApp (simplifyType' visited visitedClasses env base) (map (simplifyType' visited visitedClasses env) args)
+        _ -> CFTypeApp (simplifyType' visited visitedClasses env base) (map (simplifyType' visited visitedClasses env) args)
   where
     collectTypeArgs :: SourceType -> (SourceType, [SourceType])
     collectTypeArgs (TypeApp _ t1 t2) =
       let (base, args) = collectTypeArgs t1
       in (base, args ++ [t2])
     collectTypeArgs t = (t, [])
+simplifyType' visited visitedClasses env row@(RCons _ _ _ _) =
+  let
+    rowToFields (RCons _ (Label l) ty rest) = do
+      (fields, tailTy) <- rowToFields rest
+      return ((l, simplifyType' visited visitedClasses env ty) : fields, tailTy)
+    rowToFields (REmpty _) = Just ([], Nothing)
+    rowToFields (TypeVar _ tv) = Just ([], Just (CFTypeVar tv))
+    rowToFields (Skolem _ tv _ _ _) = Just ([], Just (CFTypeVar tv))
+    rowToFields _ = Just ([], Just CFAny)
+  in case rowToFields row of
+       Just (fields, tailTy) -> CFRow fields tailTy
+       Nothing -> CFAny
+simplifyType' _ _ _ (REmpty _) = CFRow [] Nothing
 simplifyType' visited visitedClasses env (KindApp _ ty _) = simplifyType' visited visitedClasses env ty
 simplifyType' visited visitedClasses env (KindedType _ ty _) = simplifyType' visited visitedClasses env ty
 simplifyType' _ _ _ (TypeVar _ name) = CFTypeVar name

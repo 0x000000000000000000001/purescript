@@ -12,7 +12,8 @@ import Data.Version (Version(..))
 import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.AST.SourcePos (SourcePos(..), SourceSpan(..))
 import Language.PureScript.Comments (Comment(..))
-import Language.PureScript.CoreFn (Ann, Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Meta(..), Module(..), ssAnn)
+import Language.PureScript.CoreFn (Ann, Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Meta(..), Module(..), ssAnn, CoreFnType(..))
+import Language.PureScript.CoreFn.Module (DataDecl)
 import Language.PureScript.CoreFn.FromJSON (moduleFromJSON)
 import Language.PureScript.CoreFn.ToJSON (moduleToJSON)
 import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..))
@@ -24,9 +25,10 @@ parseModule :: Value -> Result (Version, Module Ann)
 parseModule = parse moduleFromJSON
 
 -- convert a module to its json CoreFn representation and back
-parseMod :: Module Ann -> Result (Module Ann)
-parseMod m =
-  let v = Version [0] []
+parseMod :: ([DataDecl] -> Module Ann) -> Result (Module Ann)
+parseMod mkM =
+  let m = mkM []
+      v = Version [0] []
   in snd <$> parseModule (moduleToJSON v m)
 
 isSuccess :: Result a -> Bool
@@ -42,7 +44,7 @@ spec = context "CoreFnFromJson" $ do
 
   specify "should parse version" $ do
     let v = Version [0, 13, 6] []
-        m = Module ss [] mn mp [] [] M.empty [] []
+        m = Module ss [] mn mp [] [] M.empty [] [] []
         r = fst <$> parseModule (moduleToJSON v m)
     r `shouldSatisfy` isSuccess
     case r of
@@ -93,11 +95,11 @@ spec = context "CoreFnFromJson" $ do
 
 
   specify "should parse foreign" $ do
-    let r = parseMod $ Module ss [] mn mp [] [] M.empty [Ident "exp"] []
+    let r = parseMod $ Module ss [] mn mp [] [] M.empty [(ann, Ident "exp")] []
     r `shouldSatisfy` isSuccess
     case r of
       Error _   -> return ()
-      Success m -> moduleForeign m `shouldBe` [Ident "exp"]
+      Success m -> moduleForeign m `shouldBe` [(ann, Ident "exp")]
 
   context "Expr" $ do
     specify "should parse literals" $ do
@@ -192,28 +194,28 @@ spec = context "CoreFnFromJson" $ do
   context "Meta" $ do
     specify "should parse IsConstructor" $ do
       let m = Module ss [] mn mp [] [] M.empty []
-                [ NonRec (ss, [], Just (IsConstructor ProductType [Ident "x"])) (Ident "x") $
-                  Literal (ss, [], Just (IsConstructor SumType [])) (CharLiteral 'a')
+                [ NonRec (ss, [], Nothing, Just (IsConstructor ProductType [Ident "x"])) (Ident "x") $
+                  Literal (ss, [], Nothing, Just (IsConstructor SumType [])) (CharLiteral 'a')
                 ]
       parseMod m `shouldSatisfy` isSuccess
 
     specify "should parse IsNewtype" $ do
       let m = Module ss [] mn mp [] [] M.empty []
-                [ NonRec (ss, [], Just IsNewtype) (Ident "x") $
+                [ NonRec (ss, [], Nothing, Just IsNewtype) (Ident "x") $
                   Literal ann (CharLiteral 'a')
                 ]
       parseMod m `shouldSatisfy` isSuccess
 
     specify "should parse IsTypeClassConstructor" $ do
       let m = Module ss [] mn mp [] [] M.empty []
-                [ NonRec (ss, [], Just IsTypeClassConstructor) (Ident "x") $
+                [ NonRec (ss, [], Nothing, Just IsTypeClassConstructor) (Ident "x") $
                   Literal ann (CharLiteral 'a')
                 ]
       parseMod m `shouldSatisfy` isSuccess
 
     specify "should parse IsForeign" $ do
       let m = Module ss [] mn mp [] [] M.empty []
-                [ NonRec (ss, [], Just IsForeign) (Ident "x") $
+                [ NonRec (ss, [], Nothing, Just IsForeign) (Ident "x") $
                   Literal ann (CharLiteral 'a')
                 ]
       parseMod m `shouldSatisfy` isSuccess
@@ -264,4 +266,40 @@ spec = context "CoreFnFromJson" $ do
 
     specify "should parse BlockComment" $ do
       let m = Module ss [ BlockComment "block" ] mn mp [] [] M.empty [] []
+      parseMod m `shouldSatisfy` isSuccess
+
+  context "CoreFnType" $ do
+    specify "should parse CFInt" $ do
+      let annWithType = (ss, [], Just CFInt, Nothing)
+          m = Module ss [] mn mp [] [] M.empty []
+                [ NonRec annWithType (Ident "x") $
+                  Literal annWithType (NumericLiteral (Left 1))
+                ]
+      parseMod m `shouldSatisfy` isSuccess
+
+    specify "should parse CFRecord and CFRow" $ do
+      let recordTy = CFRecord (CFRow [(mkString "foo", CFString)] Nothing)
+          annWithType = (ss, [], Just recordTy, Nothing)
+          m = Module ss [] mn mp [] [] M.empty []
+                [ NonRec annWithType (Ident "x") $
+                  Literal annWithType (NumericLiteral (Left 1))
+                ]
+      parseMod m `shouldSatisfy` isSuccess
+
+    specify "should parse CFFunc" $ do
+      let funcTy = CFFunc [CFInt, CFString] CFBoolean
+          annWithType = (ss, [], Just funcTy, Nothing)
+          m = Module ss [] mn mp [] [] M.empty []
+                [ NonRec annWithType (Ident "x") $
+                  Literal annWithType (NumericLiteral (Left 1))
+                ]
+      parseMod m `shouldSatisfy` isSuccess
+
+    specify "should parse CFAdt" $ do
+      let adtTy = CFAdt (Qualified ByNullSourcePos (ProperName "Maybe")) [CFInt]
+          annWithType = (ss, [], Just adtTy, Nothing)
+          m = Module ss [] mn mp [] [] M.empty []
+                [ NonRec annWithType (Ident "x") $
+                  Literal annWithType (NumericLiteral (Left 1))
+                ]
       parseMod m `shouldSatisfy` isSuccess

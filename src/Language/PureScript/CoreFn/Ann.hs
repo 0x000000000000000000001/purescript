@@ -20,12 +20,18 @@ data CoreFnType
   | CFString
   | CFBoolean
   | CFChar
-  | CFArray CoreFnType
-  | CFFunc [CoreFnType] CoreFnType
-  | CFRecord [(PSString, CoreFnType)]
-  | CFAdt (Qualified (ProperName 'TypeName)) [CoreFnType]
-  | CFTypeVar Text
+  | CFUnit
   | CFAny
+  | CFTypeLevelString PSString
+  | CFArray CoreFnType
+  | CFTypeVar Text
+  | CFAdt (Qualified (ProperName 'TypeName)) [CoreFnType]
+  | CFTypeApp CoreFnType [CoreFnType]
+  | CFFunc [CoreFnType] CoreFnType
+  | CFRow [(PSString, CoreFnType)] (Maybe CoreFnType)
+  | CFRecord CoreFnType
+  | CFForAll [Text] CoreFnType
+  | CFConstrainedType [(Qualified (ProperName 'ClassName), [CoreFnType])] CoreFnType
   deriving (Show, Eq, Ord, Generic)
 
 instance NFData CoreFnType

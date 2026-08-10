@@ -54,21 +54,39 @@ sourceSpanToJSON (SourceSpan _ spanStart spanEnd) =
          ]
 
 coreFnTypeToJSON :: CoreFnType -> Value
-coreFnTypeToJSON CFInt = toJSON "Int"
-coreFnTypeToJSON CFNumber = toJSON "Number"
-coreFnTypeToJSON CFString = toJSON "String"
-coreFnTypeToJSON CFBoolean = toJSON "Boolean"
-coreFnTypeToJSON CFChar = toJSON "Char"
-coreFnTypeToJSON (CFArray ty) = object [ "Array" .= coreFnTypeToJSON ty ]
-coreFnTypeToJSON (CFFunc args ret) = object [ "Func" .= object [ "args" .= map coreFnTypeToJSON args, "ret" .= coreFnTypeToJSON ret ] ]
-coreFnTypeToJSON (CFRecord fields) = object [ "Record" .= object (map (\(k, v) -> (Data.Aeson.Key.fromString (Language.PureScript.PSString.decodeStringWithReplacement k) Data.Aeson..= coreFnTypeToJSON v)) fields) ]
-coreFnTypeToJSON (CFAdt (Qualified (ByModuleName mn) name) args) =
-  let ModuleName mn' = mn
-      parts = T.splitOn (T.pack ".") mn' ++ [runProperName name]
-  in object [ "ADT" .= object [ "path" .= toJSON parts, "args" .= toJSON (map coreFnTypeToJSON args) ] ]
-coreFnTypeToJSON (CFAdt (Qualified _ name) args) = object [ "ADT" .= object [ "path" .= toJSON [runProperName name], "args" .= toJSON (map coreFnTypeToJSON args) ] ]
-coreFnTypeToJSON (CFTypeVar name) = object [ "TypeVar" .= toJSON name ]
-coreFnTypeToJSON CFAny = toJSON "Any"
+coreFnTypeToJSON CFInt = object [ "type" .= toJSON "Int" ]
+coreFnTypeToJSON CFNumber = object [ "type" .= toJSON "Number" ]
+coreFnTypeToJSON CFString = object [ "type" .= toJSON "String" ]
+coreFnTypeToJSON CFBoolean = object [ "type" .= toJSON "Boolean" ]
+coreFnTypeToJSON CFChar = object [ "type" .= toJSON "Char" ]
+coreFnTypeToJSON CFUnit = object [ "type" .= toJSON "Unit" ]
+coreFnTypeToJSON CFAny = object [ "type" .= toJSON "Any" ]
+coreFnTypeToJSON (CFTypeLevelString s) = object [ "type" .= toJSON "TypeLevelString", "value" .= Language.PureScript.PSString.decodeStringWithReplacement s ]
+coreFnTypeToJSON (CFArray ty) = object [ "type" .= toJSON "Array", "element" .= coreFnTypeToJSON ty ]
+coreFnTypeToJSON (CFTypeVar name) = object [ "type" .= toJSON "TypeVar", "name" .= toJSON name ]
+coreFnTypeToJSON (CFAdt qname args) =
+  let parts = case qname of
+                Qualified (ByModuleName (ModuleName mn')) name -> T.splitOn (T.pack ".") mn' ++ [runProperName name]
+                Qualified _ name -> [runProperName name]
+  in object [ "type" .= toJSON "Adt", "fqn" .= toJSON parts, "args" .= toJSON (map coreFnTypeToJSON args) ]
+coreFnTypeToJSON (CFTypeApp constructor args) =
+  object [ "type" .= toJSON "TypeApp", "constructor" .= coreFnTypeToJSON constructor, "args" .= toJSON (map coreFnTypeToJSON args) ]
+coreFnTypeToJSON (CFFunc args ret) = 
+  object [ "type" .= toJSON "Func", "args" .= toJSON (map coreFnTypeToJSON args), "ret" .= coreFnTypeToJSON ret ]
+coreFnTypeToJSON (CFRow fields tailTy) = 
+  let fieldToJSON (k, v) = object [ "label" .= Language.PureScript.PSString.decodeStringWithReplacement k, "type" .= coreFnTypeToJSON v ]
+  in object [ "type" .= toJSON "Row", "fields" .= toJSON (map fieldToJSON fields), "tail" .= maybe (toJSON Data.Aeson.Null) coreFnTypeToJSON tailTy ]
+coreFnTypeToJSON (CFRecord row) = 
+  object [ "type" .= toJSON "Record", "row" .= coreFnTypeToJSON row ]
+coreFnTypeToJSON (CFForAll vars body) = 
+  object [ "type" .= toJSON "ForAll", "vars" .= toJSON vars, "body" .= coreFnTypeToJSON body ]
+coreFnTypeToJSON (CFConstrainedType constraints body) = 
+  let constraintToJSON (qname, args) = 
+        let parts = case qname of
+                      Qualified (ByModuleName (ModuleName mn')) name -> T.splitOn (T.pack ".") mn' ++ [runProperName name]
+                      Qualified _ name -> [runProperName name]
+        in object [ "fqn" .= toJSON parts, "args" .= toJSON (map coreFnTypeToJSON args) ]
+  in object [ "type" .= toJSON "ConstrainedType", "constraints" .= toJSON (map constraintToJSON constraints), "body" .= coreFnTypeToJSON body ]
 
 annToJSON :: Ann -> Value
 annToJSON (ss, _, mty, m) = object [ "sourceSpan"  .= sourceSpanToJSON ss
