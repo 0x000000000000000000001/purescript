@@ -6,45 +6,41 @@ var fooIsSymbol = {
         return "foo";
     }
 };
+var barIsSymbol = {
+    reflectSymbol: function () {
+        return "bar";
+    }
+};
 var set = function (dictIsSymbol) {
-    var reflectSymbol = Data_Symbol.reflectSymbol(dictIsSymbol);
     return function () {
         return function (l) {
             return function (a) {
                 return function (r) {
-                    return Record_Unsafe.unsafeSet(reflectSymbol(l))(a)(r);
+                    return Record_Unsafe.unsafeSet(Data_Symbol.reflectSymbol(dictIsSymbol)(l))(a)(r);
                 };
             };
         };
     };
 };
-var set1 = /* #__PURE__ */ set(fooIsSymbol)();
 var get = function (dictIsSymbol) {
-    var reflectSymbol = Data_Symbol.reflectSymbol(dictIsSymbol);
     return function () {
         return function (l) {
             return function (r) {
-                return Record_Unsafe.unsafeGet(reflectSymbol(l))(r);
+                return Record_Unsafe.unsafeGet(Data_Symbol.reflectSymbol(dictIsSymbol)(l))(r);
             };
         };
     };
 };
-var get1 = /* #__PURE__ */ get(fooIsSymbol)();
-var get2 = /* #__PURE__ */ get({
-    reflectSymbol: function () {
-        return "bar";
-    }
-})();
 var foo = /* #__PURE__ */ (function () {
     return Type_Proxy["Proxy"].value;
 })();
 var h = function (n) {
-    return set1(foo)(n)({
+    return set(fooIsSymbol)()(foo)(n)({
         foo: 0
     });
 };
 var f = function (n) {
-    return get1(foo)({
+    return get(fooIsSymbol)()(foo)({
         foo: n
     });
 };
@@ -52,7 +48,7 @@ var bar = /* #__PURE__ */ (function () {
     return Type_Proxy["Proxy"].value;
 })();
 var g = function (n) {
-    return get2(bar)({
+    return get(barIsSymbol)()(bar)({
         foo: 0,
         bar: n
     });

@@ -35,18 +35,23 @@ import Data.Maybe (mapMaybe)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as T
 
+import Data.Aeson qualified as A
+import Data.Aeson.KeyMap qualified as KM
+import Data.ByteString.Lazy qualified as BSL
+import Data.Set qualified as S
+
 
 import Control.Monad (forM_, when)
 
 import System.Exit (ExitCode(..))
-import System.FilePath (pathSeparator, replaceExtension, takeFileName, (</>))
+import System.FilePath (pathSeparator, replaceExtension, takeFileName, dropExtensions, (</>))
 import System.IO (Handle, hPutStr, hPutStrLn)
 import System.IO.UTF8 (readUTF8File)
 
 import Text.Regex.Base (RegexContext(..), RegexMaker(..))
 import Text.Regex.TDFA (Regex)
 
-import TestUtils (ExpectedModuleName(..), SupportModules, compile, createOutputFile, getTestFiles, goldenVsString, modulesDir, trim)
+import TestUtils (ExpectedModuleName(..), SupportModules, compile, compile', createOutputFile, getTestFiles, goldenVsString, modulesDir, trim)
 import Test.Hspec (Expectation, SpecWith, beforeAllWith, describe, expectationFailure, it, runIO)
 
 spec :: SpecWith SupportModules
@@ -55,6 +60,7 @@ spec = do
   warningTests
   failingTests
   optimizeTests
+  tastTests
 
 passingTests :: SpecWith SupportModules
 passingTests = do
@@ -96,6 +102,15 @@ optimizeTests = do
     forM_ optimizeTestCases $ \testPurs ->
       it ("'" <> takeFileName (getTestMain testPurs) <> "' should compile to expected output") $ \support ->
         assertCompilesToExpectedOutput support testPurs
+
+tastTests :: SpecWith SupportModules
+tastTests = do
+  tastTestCases <- runIO $ getTestFiles "tast"
+
+  describe "TAST examples" $
+    forM_ tastTestCases $ \testPurs ->
+      it ("'" <> takeFileName (getTestMain testPurs) <> "' should compile to expected TAST JSON") $ \support ->
+        assertTastOutput support testPurs
 
 checkShouldReport :: [String] -> (P.MultipleErrors -> String) -> P.MultipleErrors -> Expectation
 checkShouldReport expected prettyPrintDiagnostics errs =
@@ -146,7 +161,8 @@ assertCompiles support inputFiles outputFile = do
       case nodeResult of
         Right (ExitSuccess, out, err)
           | not (null err) -> expectationFailure $ "Test wrote to stderr:\n\n" <> err
-          | not (null out) && trim (last (lines out)) == "Done" -> hPutStr outputFile out
+          | not (null out) && trim (last (lines out)) == "Done" -> do
+              hPutStr outputFile out
           | otherwise -> expectationFailure $ "Test did not finish with 'Done':\n\n" <> out
         Right (ExitFailure _, _, err) -> expectationFailure err
         Left err -> expectationFailure err
@@ -203,6 +219,32 @@ assertCompilesToExpectedOutput support inputFiles = do
       goldenVsString
         (replaceExtension (getTestMain inputFiles) ".out.js")
         (BS.readFile $ modulesDir </> "Main/index.js")
+
+stripSourceSpans :: A.Value -> A.Value
+stripSourceSpans (A.Object obj) = A.Object $ KM.map stripSourceSpans $ KM.delete "sourceSpan" obj
+stripSourceSpans (A.Array arr) = A.Array $ fmap stripSourceSpans arr
+stripSourceSpans other = other
+
+assertTastOutput
+  :: SupportModules
+  -> [FilePath]
+  -> Expectation
+assertTastOutput support inputFiles = do
+  let opts = P.defaultOptions { P.optionsCodegenTargets = S.fromList [P.JS, P.CoreFn] }
+  (fileContents, (result, _)) <- compile' opts Nothing support inputFiles
+  let errorOptions = P.defaultPPEOptions { P.ppeFileContents = fileContents }
+  case result of
+    Left errs -> expectationFailure . P.prettyPrintMultipleErrors errorOptions $ errs
+    Right _ -> do
+      let mainModuleName = dropExtensions (takeFileName (getTestMain inputFiles))
+      let corefnPath = modulesDir </> mainModuleName </> "corefn.json"
+      jsonContent <- BS.readFile corefnPath
+      case A.decodeStrict jsonContent of
+        Nothing -> expectationFailure $ "Failed to parse corefn.json at " <> corefnPath
+        Just val ->
+          goldenVsString
+            (replaceExtension (getTestMain inputFiles) ".out.json")
+            (return . BSL.toStrict . A.encode . stripSourceSpans $ val)
 
 -- Prints a set of diagnostics (i.e. errors or warnings) as a string, in order
 -- to compare it to the contents of a golden test file.

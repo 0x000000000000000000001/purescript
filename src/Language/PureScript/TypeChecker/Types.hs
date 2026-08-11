@@ -333,7 +333,7 @@ instantiatePolyTypeWithUnknowns val (ConstrainedType _ con ty) = do
   dicts <- getTypeClassDictionaries
   hints <- getHints
   let dictType = foldl srcTypeApp (srcTypeConstructor (fmap coerceProperName (constraintClass con))) (constraintArgs con)
-  instantiatePolyTypeWithUnknowns (TypedValue True (App val (TypedValue False (TypeClassDictionary con dicts hints) dictType)) ty) ty
+  instantiatePolyTypeWithUnknowns (TypedValue False (App val (TypedValue False (TypeClassDictionary con dicts hints) dictType)) ty) ty
 instantiatePolyTypeWithUnknowns val ty = return (val, ty)
 
 instantiatePolyTypeWithUnknownsUntilVisible
@@ -352,7 +352,7 @@ instantiateConstraint val (ConstrainedType _ con ty) = do
   dicts <- getTypeClassDictionaries
   hints <- getHints
   let dictType = foldl srcTypeApp (srcTypeConstructor (fmap coerceProperName (constraintClass con))) (constraintArgs con)
-  instantiateConstraint (TypedValue True (App val (TypedValue False (TypeClassDictionary con dicts hints) dictType)) ty) ty
+  instantiateConstraint (TypedValue False (App val (TypedValue False (TypeClassDictionary con dicts hints) dictType)) ty) ty
 instantiateConstraint val ty = pure (val, ty)
 
 -- | Match against TUnknown and call insertUnkName, failing otherwise.
@@ -489,7 +489,7 @@ infer' (Var ss var) = do
       dicts <- getTypeClassDictionaries
       hints <- getHints
       let dictType = foldl srcTypeApp (srcTypeConstructor (fmap coerceProperName (constraintClass con))) (constraintArgs con)
-      return $ TypedValue' True (App (TypedValue True (Var ss var) ty) (TypedValue False (TypeClassDictionary con dicts hints) dictType)) ty'
+      return $ TypedValue' True (App (TypedValue False (Var ss var) ty) (TypedValue False (TypeClassDictionary con dicts hints) dictType)) ty'
     _ -> return $ TypedValue' True (Var ss var) ty
 infer' v@(Constructor _ c) = do
   env <- getEnv
@@ -1003,7 +1003,7 @@ checkFunctionApplication' fn (ConstrainedType _ con fnTy) arg = do
   dicts <- getTypeClassDictionaries
   hints <- getHints
   let dictType = foldl srcTypeApp (srcTypeConstructor (fmap coerceProperName (constraintClass con))) (constraintArgs con)
-  checkFunctionApplication' (TypedValue True (App fn (TypedValue False (TypeClassDictionary con dicts hints) dictType)) fnTy) fnTy arg
+  checkFunctionApplication' (TypedValue False (App fn (TypedValue False (TypeClassDictionary con dicts hints) dictType)) fnTy) fnTy arg
 checkFunctionApplication' fn fnTy dict@TypeClassDictionary{} =
   return (fnTy, App fn dict)
 checkFunctionApplication' fn u arg = do

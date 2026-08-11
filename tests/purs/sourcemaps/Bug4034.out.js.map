@@ -1,1 +1,1 @@
-{"file":"index.js","mappings":";;;;;;;;AA2BA,eAAA;;WAAA;kCACwB;;;;;;AAXxB,cAAA;;WAAA;iCACsB;;;;;;AA6BtB,eAAA;;WAAA;kCACwB;;;;;;AAXxB,gBAAA;;WAAA;mCAC0B;;;;;;AAmB1B,gBAAA;;WAAA;mCAC0B","names":[],"sources":["../../tests/purs/sourcemaps/Bug4034.purs"],"version":3}
+{"file":"index.js","mappings":";;;;;;;;AA2BA,eAAA;WAAA;sDACwB;;;;;;AAXxB,cAAA;WAAA;qDACsB;;;;;;AA6BtB,eAAA;WAAA;sDACwB;;;;;;AAXxB,gBAAA;WAAA;uDAC0B;;;;;;AAmB1B,gBAAA;WAAA;uDAC0B","names":[],"sources":["../../tests/purs/sourcemaps/Bug4034.purs"],"version":3}
