@@ -13,7 +13,7 @@ import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.AST.SourcePos (SourcePos(..), SourceSpan(..))
 import Language.PureScript.Comments (Comment(..))
 import Language.PureScript.CoreFn (Ann, Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Meta(..), Module(..), ssAnn, CoreFnType(..))
-import Language.PureScript.CoreFn.Module (DataDecl)
+import Language.PureScript.CoreFn.Module (DataDecl, ClassDecl)
 import Language.PureScript.CoreFn.FromJSON (moduleFromJSON)
 import Language.PureScript.CoreFn.ToJSON (moduleToJSON)
 import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..))
@@ -25,9 +25,9 @@ parseModule :: Value -> Result (Version, Module Ann)
 parseModule = parse moduleFromJSON
 
 -- convert a module to its json CoreFn representation and back
-parseMod :: ([DataDecl] -> Module Ann) -> Result (Module Ann)
+parseMod :: ([DataDecl] -> [ClassDecl] -> Module Ann) -> Result (Module Ann)
 parseMod mkM =
-  let m = mkM []
+  let m = mkM [] []
       v = Version [0] []
   in snd <$> parseModule (moduleToJSON v m)
 
@@ -44,7 +44,7 @@ spec = context "CoreFnFromJson" $ do
 
   specify "should parse version" $ do
     let v = Version [0, 13, 6] []
-        m = Module ss [] mn mp [] [] M.empty [] [] []
+        m = Module ss [] mn mp [] [] M.empty [] [] [] []
         r = fst <$> parseModule (moduleToJSON v m)
     r `shouldSatisfy` isSuccess
     case r of

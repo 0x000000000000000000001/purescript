@@ -21,13 +21,13 @@ import Language.PureScript.CoreFn.Ann (Ann, ssAnn, CoreFnType(..))
 import Language.PureScript.CoreFn.Binders (Binder(..))
 import Language.PureScript.CoreFn.Expr (Bind(..), CaseAlternative(..), Expr(..), Guard)
 import Language.PureScript.CoreFn.Meta (ConstructorType(..), Meta(..))
-import Language.PureScript.CoreFn.Module (Module(..), DataDecl(..), DataConstructor(..))
+import Language.PureScript.CoreFn.Module (Module(..), DataDecl(..), DataConstructor(..), ClassDecl(..))
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment (DataDeclType(..), TypeKind(..), Environment(..), NameKind(..), isDictTypeName, lookupConstructor, lookupValue)
 import Language.PureScript.Label (Label(..))
 import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), getQual)
 import Language.PureScript.PSString (PSString)
-import Language.PureScript.Types (pattern REmptyKinded, SourceType, Type(..), replaceAllTypeVars, constraintClass, Constraint(..))
+import Language.PureScript.Types (pattern REmptyKinded, SourceType, Type(..), replaceAllTypeVars, constraintClass, constraintArgs, Constraint(..))
 import Language.PureScript.AST qualified as A
 import Language.PureScript.Constants.Prim qualified as C
 
@@ -43,7 +43,8 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
       externs = nubBy ((==) `on` snd) $ mapMaybe (externToCoreFn env) decls
       decls' = concatMap declToCoreFn decls
       dataDecls' = concatMap dataDeclToCoreFn decls
-  in Module modSS coms mn (spanName modSS) imports' exps' reExps externs decls' dataDecls'
+      classDecls' = concatMap classDeclToCoreFn decls
+  in Module modSS coms mn (spanName modSS) imports' exps' reExps externs decls' dataDecls' classDecls'
   where
   -- Creates a map from a module name to the re-export references defined in
   -- that module.
@@ -71,6 +72,15 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
   dataDeclToCoreFn (A.DataBindingGroupDeclaration ds) =
     concatMap dataDeclToCoreFn ds
   dataDeclToCoreFn _ = []
+
+  -- Extracts type class declarations from AST to CoreFn representation.
+  classDeclToCoreFn :: A.Declaration -> [ClassDecl]
+  classDeclToCoreFn (A.TypeClassDeclaration _ className tyVars superclasses _ members) =
+    let typeVars' = fmap fst tyVars
+        superclasses' = fmap (\c -> (constraintClass c, fmap (simplifyType env) (constraintArgs c))) superclasses
+        methods' = mapMaybe (fmap (\td -> let (ident, ty) = A.unwrapTypeDeclaration td in (ident, simplifyType env ty)) . A.getTypeDeclaration) members
+    in [ClassDecl className typeVars' superclasses' methods']
+  classDeclToCoreFn _ = []
 
   -- Desugars member declarations from AST to CoreFn representation.
   declToCoreFn :: A.Declaration -> [Bind Ann]

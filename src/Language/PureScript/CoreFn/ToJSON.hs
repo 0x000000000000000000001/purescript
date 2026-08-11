@@ -22,7 +22,7 @@ import Data.Text qualified as T
 
 import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.AST.SourcePos (SourceSpan(..))
-import Language.PureScript.CoreFn (Ann, Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Meta(..), Module(..), CoreFnType(..), DataDecl(..), DataConstructor(..))
+import Language.PureScript.CoreFn (Ann, Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Meta(..), Module(..), CoreFnType(..), DataDecl(..), DataConstructor(..), ClassDecl(..))
 import Language.PureScript.Names (Ident, ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..), runIdent)
 import Language.PureScript.PSString (PSString, decodeStringWithReplacement)
 
@@ -164,6 +164,7 @@ moduleToJSON v m = object
   , "foreignAnnotations" .= object (map (\(ann, ident) -> T.unpack (Language.PureScript.Names.runIdent ident) .= annToJSON ann) (moduleForeign m))
   , "decls"      .= map bindToJSON (moduleDecls m)
   , "dataDecls"  .= map dataDeclToJSON (moduleDataDecls m)
+  , "classDecls" .= map classDeclToJSON (moduleClassDecls m)
   , "builtWith"  .= toJSON (showVersion v)
   , "comments"   .= map toJSON (moduleComments m)
   ]
@@ -200,15 +201,30 @@ bindToJSON (Rec bs)
 
 dataDeclToJSON :: DataDecl -> Value
 dataDeclToJSON (DataDecl name typeVars ctors) = object
-  [ "typeName" .= properNameToJSON name
-  , "typeVars" .= toJSON typeVars
+  [ "name" .= properNameToJSON name
+  , "vars" .= toJSON typeVars
   , "constructors" .= map dataConstructorToJSON ctors
   ]
 
+classDeclToJSON :: ClassDecl -> Value
+classDeclToJSON (ClassDecl name typeVars superclasses methods) =
+  let superclassToJSON (qname, args) = 
+        let parts = case qname of
+                      Qualified (ByModuleName (ModuleName mn')) name' -> T.splitOn (T.pack ".") mn' ++ [runProperName name']
+                      Qualified _ name' -> [runProperName name']
+        in object [ "fqn" .= toJSON parts, "args" .= toJSON (map coreFnTypeToJSON args) ]
+      methodToJSON (ident, ty) =
+        object [ "name" .= runIdent ident, "type" .= coreFnTypeToJSON ty ]
+  in object [ "name" .= runProperName name
+            , "vars" .= toJSON typeVars
+            , "superclasses" .= toJSON (map superclassToJSON superclasses)
+            , "methods" .= toJSON (map methodToJSON methods)
+            ]
+
 dataConstructorToJSON :: DataConstructor -> Value
 dataConstructorToJSON (DataConstructor name fields) = object
-  [ "constructorName" .= properNameToJSON name
-  , "fieldTypes" .= map coreFnTypeToJSON fields
+  [ "name" .= properNameToJSON name
+  , "fields" .= map coreFnTypeToJSON fields
   ]
 
 recordToJSON :: (a -> Value) -> [(PSString, a)] -> Value

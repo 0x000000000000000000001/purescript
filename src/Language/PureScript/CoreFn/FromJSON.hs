@@ -236,6 +236,7 @@ moduleFromJSON = withObject "Module" moduleFromObj
       ) foreignIdents
     moduleComments <- o .: "comments" >>= listParser parseJSON
     let moduleDataDecls = []
+    let moduleClassDecls = []
     return (version, Module {..})
 
   versionFromJSON :: String -> Parser Version

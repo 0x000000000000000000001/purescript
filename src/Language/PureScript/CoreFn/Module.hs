@@ -9,7 +9,7 @@ import Language.PureScript.AST.SourcePos (SourceSpan)
 import Language.PureScript.Comments (Comment)
 import Language.PureScript.CoreFn.Expr (Bind)
 import Language.PureScript.CoreFn.Ann (CoreFnType)
-import Language.PureScript.Names (Ident, ModuleName, ProperName, ProperNameType(..))
+import Language.PureScript.Names (Ident, ModuleName, ProperName, ProperNameType(..), Qualified)
 
 data DataDecl = DataDecl
   { dataDeclName :: ProperName 'TypeName
@@ -20,6 +20,13 @@ data DataDecl = DataDecl
 data DataConstructor = DataConstructor
   { dataCtorName :: ProperName 'ConstructorName
   , dataCtorFields :: [CoreFnType]
+  } deriving (Show)
+
+data ClassDecl = ClassDecl
+  { classDeclName :: ProperName 'ClassName
+  , classDeclTypeVars :: [Text]
+  , classDeclSuperclasses :: [(Qualified (ProperName 'ClassName), [CoreFnType])]
+  , classDeclMethods :: [(Ident, CoreFnType)]
   } deriving (Show)
 
 -- |
@@ -36,4 +43,5 @@ data Module a = Module
   , moduleForeign :: [(a, Ident)]
   , moduleDecls :: [Bind a]
   , moduleDataDecls :: [DataDecl]
+  , moduleClassDecls :: [ClassDecl]
   } deriving (Functor, Show)
