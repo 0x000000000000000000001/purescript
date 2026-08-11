@@ -242,8 +242,8 @@ exprToJSON (Literal ann l)          = object [ "type"        .= "Literal"
 exprToJSON (Constructor ann d c is) = object [ "type"        .= "Constructor"
                                              , "annotation"  .= annToJSON ann
                                              , "typeName"    .= properNameToJSON d
-                                             , "constructorName" .= properNameToJSON c
-                                             , "fieldNames"  .= map identToJSON is
+                                             , "name"        .= properNameToJSON c
+                                             , "fields"      .= map identToJSON is
                                              ]
 exprToJSON (Accessor ann f r)       = object [ "type"        .= "Accessor"
                                              , "annotation"  .= annToJSON ann
@@ -307,8 +307,7 @@ binderToJSON (LiteralBinder ann l)          = object [ "binderType"  .= "Literal
 binderToJSON (ConstructorBinder ann d c bs) = object [ "binderType"  .= "ConstructorBinder"
                                                      , "annotation"  .= annToJSON ann
                                                      , "typeName"    .= qualifiedToJSON runProperName d
-                                                     , "constructorName"
-                                                                            .= qualifiedToJSON runProperName c
+                                                     , "name"        .= qualifiedToJSON runProperName c
                                                      , "binders"     .= map binderToJSON bs
                                                      ]
 binderToJSON (NamedBinder ann n b)          = object [ "binderType"  .= "NamedBinder"

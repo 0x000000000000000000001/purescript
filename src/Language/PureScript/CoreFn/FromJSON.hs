@@ -311,8 +311,8 @@ exprFromJSON modulePath = withObject "Expr" exprFromObj
   constructorFromObj o = do
     ann <- o .: "annotation" >>= annFromJSON modulePath
     tyn <- o .: "typeName" >>= properNameFromJSON
-    con <- o .: "constructorName" >>= properNameFromJSON
-    is  <- o .: "fieldNames" >>= listParser identFromJSON
+    con <- o .: "name" <|> o .: "constructorName" >>= properNameFromJSON
+    is  <- o .: "fields" <|> o .: "fieldNames" >>= listParser identFromJSON
     return $ Constructor ann tyn con is
 
   accessorFromObj o = do
@@ -404,7 +404,7 @@ binderFromJSON modulePath = withObject "Binder" binderFromObj
   constructorBinderFromObj o = do
     ann <- o .: "annotation" >>= annFromJSON modulePath
     tyn <- o .: "typeName" >>= qualifiedFromJSON ProperName
-    con <- o .: "constructorName" >>= qualifiedFromJSON ProperName
+    con <- o .: "name" <|> o .: "constructorName" >>= qualifiedFromJSON ProperName
     bs  <- o .: "binders" >>= listParser (binderFromJSON modulePath)
     return $ ConstructorBinder ann tyn con bs
 
