@@ -202,7 +202,9 @@ bindToJSON (Rec bs)
 dataDeclToJSON :: DataDecl -> Value
 dataDeclToJSON (DataDecl name typeVars ctors) = object
   [ "name" .= properNameToJSON name
+  , "typeName" .= properNameToJSON name
   , "vars" .= toJSON typeVars
+  , "typeVars" .= toJSON typeVars
   , "constructors" .= map dataConstructorToJSON ctors
   ]
 
@@ -224,7 +226,9 @@ classDeclToJSON (ClassDecl name typeVars superclasses methods) =
 dataConstructorToJSON :: DataConstructor -> Value
 dataConstructorToJSON (DataConstructor name fields) = object
   [ "name" .= properNameToJSON name
+  , "constructorName" .= properNameToJSON name
   , "fields" .= map coreFnTypeToJSON fields
+  , "fieldTypes" .= map coreFnTypeToJSON fields
   ]
 
 recordToJSON :: (a -> Value) -> [(PSString, a)] -> Value
@@ -243,7 +247,9 @@ exprToJSON (Constructor ann d c is) = object [ "type"        .= "Constructor"
                                              , "annotation"  .= annToJSON ann
                                              , "typeName"    .= properNameToJSON d
                                              , "name"        .= properNameToJSON c
+                                             , "constructorName" .= properNameToJSON c
                                              , "fields"      .= map identToJSON is
+                                             , "fieldNames"  .= map identToJSON is
                                              ]
 exprToJSON (Accessor ann f r)       = object [ "type"        .= "Accessor"
                                              , "annotation"  .= annToJSON ann
@@ -308,6 +314,7 @@ binderToJSON (ConstructorBinder ann d c bs) = object [ "binderType"  .= "Constru
                                                      , "annotation"  .= annToJSON ann
                                                      , "typeName"    .= qualifiedToJSON runProperName d
                                                      , "name"        .= qualifiedToJSON runProperName c
+                                                     , "constructorName" .= qualifiedToJSON runProperName c
                                                      , "binders"     .= map binderToJSON bs
                                                      ]
 binderToJSON (NamedBinder ann n b)          = object [ "binderType"  .= "NamedBinder"
