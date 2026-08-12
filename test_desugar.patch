@@ -1,0 +1,3 @@
+--- src/Language/PureScript/CoreFn/Desugar.hs
++++ src/Language/PureScript/CoreFn/Desugar.hs
+@@ -34,0 +35 @@
