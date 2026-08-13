@@ -6,7 +6,8 @@ import Protolude (ordNub, orEmpty)
 import Control.Arrow (second)
 
 import Data.Function (on)
-import Data.Maybe (mapMaybe)
+import Data.Maybe (mapMaybe, fromMaybe)
+import Data.Text qualified as T
 import Data.Tuple (swap)
 import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as M
@@ -296,6 +297,12 @@ properToIdent = Ident . runProperName
 simplifyType :: Environment -> SourceType -> CoreFnType
 simplifyType = simplifyType' S.empty S.empty
 
+stripDictTypeName :: ProperName a -> ProperName a
+stripDictTypeName (ProperName n) = ProperName (fromMaybe n (T.stripSuffix "$Dict" n))
+
+disqual :: Qualified a -> a
+disqual (Qualified _ a) = a
+
 simplifyType' :: S.Set (Qualified (ProperName 'TypeName)) -> S.Set (Qualified (ProperName 'ClassName)) -> Environment -> SourceType -> CoreFnType
 simplifyType' visited visitedClasses env (ForAll _ _ ident _ ty _) = 
   let (vars, body) = collectForAlls [ident] ty
@@ -320,7 +327,9 @@ simplifyType' visited visitedClasses env (TypeConstructor _ qname@(Qualified _ (
   | name == "Char"    = CFChar
   | name == "Unit"    = CFUnit
   | otherwise =
-      case M.lookup qname (types env) of
+      if isDictTypeName (disqual qname)
+      then CFAdt (fmap stripDictTypeName qname) []
+      else case M.lookup qname (types env) of
         Just (_, DataType Data _ _) -> CFAdt qname []
         Just (_, ExternData _) -> CFAdt qname []
         Just (_, DataType Newtype _ [(_, [underlyingType])]) -> 
@@ -354,7 +363,9 @@ simplifyType' visited visitedClasses env tApp@(TypeApp _ _ _) =
   let (base, args) = collectTypeArgs tApp
    in case base of
         TypeConstructor _ qname -> 
-          case M.lookup qname (types env) of
+          if isDictTypeName (disqual qname)
+          then CFAdt (fmap stripDictTypeName qname) (map (simplifyType' visited visitedClasses env) args)
+          else case M.lookup qname (types env) of
             Just (_, DataType Data _ _) -> CFAdt qname (map (simplifyType' visited visitedClasses env) args)
             Just (_, ExternData _) -> CFAdt qname (map (simplifyType' visited visitedClasses env) args)
             Just (_, DataType Newtype typeVars [(_, [underlyingType])]) -> 
