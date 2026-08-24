@@ -171,6 +171,8 @@ renameInValue (ObjectUpdate ann obj copy vs) =
   (\obj' -> ObjectUpdate ann obj' copy) <$> renameInValue obj <*> traverse (\(name, v) -> (name, ) <$> renameInValue v) vs
 renameInValue (Abs ann name v) =
   newScope $ Abs ann <$> updateScope name <*> renameInValue v
+renameInValue (TypeApp ann v ty) =
+  TypeApp ann <$> renameInValue v <*> pure ty
 renameInValue (App ann v1 v2) =
   App ann <$> renameInValue v1 <*> renameInValue v2
 renameInValue (Var ann (Qualified qb name)) | isBySourcePos qb || not (isPlainIdent name) =

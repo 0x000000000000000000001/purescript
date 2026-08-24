@@ -306,6 +306,7 @@ moduleBindToJs mn = bindToJs
                   UnusedIdent -> []
                   _           -> [identToJs arg]
     return $ AST.Function Nothing Nothing jsArg (AST.Block Nothing [AST.Return Nothing ret])
+  valueToJs' (TypeApp _ val _) = valueToJs' val
   valueToJs' e@App{} = do
     let (f, args) = unApp e []
     args' <- mapM valueToJs args
@@ -318,6 +319,7 @@ moduleBindToJs mn = bindToJs
     where
     unApp :: Expr Ann -> [Expr Ann] -> (Expr Ann, [Expr Ann])
     unApp (App _ val arg) args = unApp val (arg : args)
+    unApp (TypeApp _ val _) args = unApp val args
     unApp other args = (other, args)
   valueToJs' (Var (_, _, _, Just IsForeign) qi@(Qualified (ByModuleName mn') ident)) =
     return $ if mn' == mn

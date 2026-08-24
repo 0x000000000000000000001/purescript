@@ -20,7 +20,8 @@ import Data.List (nubBy)
 import Language.PureScript.Comments (Comment)
 import Language.PureScript.CoreFn.Ann (Ann, ssAnn, CoreFnType(..))
 import Language.PureScript.CoreFn.Binders (Binder(..))
-import Language.PureScript.CoreFn.Expr (Bind(..), CaseAlternative(..), Expr(..), Guard)
+import Language.PureScript.CoreFn.Expr (Bind(..), CaseAlternative(..), Expr(Literal, Constructor, Accessor, ObjectUpdate, Abs, App, Var, Case, Let), Guard)
+import Language.PureScript.CoreFn.Expr qualified as E
 import Language.PureScript.CoreFn.Meta (ConstructorType(..), Meta(..))
 import Language.PureScript.CoreFn.Module (Module(..), DataDecl(..), DataConstructor(..), ClassDecl(..))
 import Language.PureScript.Crash (internalError)
@@ -163,6 +164,8 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
     Let (ss, com, simplifyType env <$> ty, getLetMeta w) (concatMap declToCoreFn ds) (exprToCoreFn ss [] Nothing v)
   exprToCoreFn _ com ty (A.PositionedValue ss com1 v) =
     exprToCoreFn ss (com ++ com1) ty v
+  exprToCoreFn ss com ty (A.VisibleTypeApp v t) =
+    E.TypeApp (ss, com, simplifyType env <$> ty, Nothing) (exprToCoreFn ss [] Nothing v) (simplifyType env t)
   exprToCoreFn _ _ _ e =
     error $ "Unexpected value in exprToCoreFn mn: " ++ show e
 

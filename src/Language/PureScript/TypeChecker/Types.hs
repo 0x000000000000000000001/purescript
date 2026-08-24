@@ -328,7 +328,7 @@ instantiatePolyTypeWithUnknowns
 instantiatePolyTypeWithUnknowns val (ForAll _ _ ident mbK ty _) = do
   u <- maybe (internalCompilerError "Unelaborated forall") freshTypeWithKind mbK
   insertUnkName' u ident
-  instantiatePolyTypeWithUnknowns val $ replaceTypeVars ident u ty
+  instantiatePolyTypeWithUnknowns (VisibleTypeApp val u) $ replaceTypeVars ident u ty
 instantiatePolyTypeWithUnknowns val (ConstrainedType _ con ty) = do
   dicts <- getTypeClassDictionaries
   hints <- getHints
@@ -344,7 +344,7 @@ instantiatePolyTypeWithUnknownsUntilVisible
 instantiatePolyTypeWithUnknownsUntilVisible val (ForAll _ TypeVarInvisible ident mbK ty _) = do
   u <- maybe (internalCompilerError "Unelaborated forall") freshTypeWithKind mbK
   insertUnkName' u ident
-  instantiatePolyTypeWithUnknownsUntilVisible val $ replaceTypeVars ident u ty
+  instantiatePolyTypeWithUnknownsUntilVisible (VisibleTypeApp val u) $ replaceTypeVars ident u ty
 instantiatePolyTypeWithUnknownsUntilVisible val ty = return (val, ty)
 
 instantiateConstraint :: MonadState CheckState m => Expr -> Type SourceAnn -> m (Expr, Type SourceAnn)
@@ -461,12 +461,12 @@ infer' (App f arg) = do
   f'@(TypedValue' _ _ ft) <- infer f
   (ret, app) <- checkFunctionApplication (tvToExpr f') ft arg
   return $ TypedValue' True app ret
-infer' (VisibleTypeApp valFn (TypeWildcard _ _)) = do
+infer' (VisibleTypeApp valFn wc@(TypeWildcard _ _)) = do
   TypedValue' _ valFn' valTy <- infer valFn
   (valFn'', valTy') <- instantiatePolyTypeWithUnknownsUntilVisible valFn' valTy
   case valTy' of
     ForAll qAnn _ qName qKind qBody qSko -> do
-      pure $ TypedValue' True valFn'' (ForAll qAnn TypeVarInvisible qName qKind qBody qSko)
+      pure $ TypedValue' True (VisibleTypeApp valFn'' wc) (ForAll qAnn TypeVarInvisible qName qKind qBody qSko)
     _ ->
       throwError $ errorMessage $ CannotSkipTypeApplication valTy'
 infer' (VisibleTypeApp valFn tyArg) = do
@@ -478,7 +478,7 @@ infer' (VisibleTypeApp valFn tyArg) = do
       tyArg'' <- replaceAllTypeSynonyms <=< checkKind tyArg' $ qKind
       let resTy = replaceTypeVars qName tyArg'' qBody
       (valFn''', resTy') <- instantiateConstraint valFn'' resTy
-      pure $ TypedValue' True valFn''' resTy'
+      pure $ TypedValue' True (VisibleTypeApp valFn''' tyArg'') resTy'
     _ ->
       throwError $ errorMessage $ CannotApplyExpressionOfTypeOnType valTy tyArg
 infer' (Var ss var) = do
@@ -996,7 +996,7 @@ checkFunctionApplication' fn (ForAll _ _ ident mbK ty _) arg = do
   u <- maybe (internalCompilerError "Unelaborated forall") freshTypeWithKind mbK
   insertUnkName' u ident
   let replaced = replaceTypeVars ident u ty
-  checkFunctionApplication fn replaced arg
+  checkFunctionApplication (VisibleTypeApp fn u) replaced arg
 checkFunctionApplication' fn (KindedType _ ty _) arg =
   checkFunctionApplication fn ty arg
 checkFunctionApplication' fn (ConstrainedType _ con fnTy) arg = do

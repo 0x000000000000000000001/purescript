@@ -28,6 +28,7 @@ everywhereOnValues f g h = (f', g', h')
   g' (App ann v1 v2) = g (App ann (g' v1) (g' v2))
   g' (Case ann vs alts) = g (Case ann (map g' vs) (map handleCaseAlternative alts))
   g' (Let ann ds e) = g (Let ann (map f' ds) (g' e))
+  g' (TypeApp ann e ty) = g (TypeApp ann (g' e) ty)
   g' e = g e
 
   h' (LiteralBinder a b) = h (LiteralBinder a (handleLiteral h' b))
@@ -71,6 +72,7 @@ traverseCoreFn f g h i = (f', g', h', i')
   g' (App ann v1 v2) = App ann <$> g v1 <*> g v2
   g' (Case ann vs alts) = Case ann <$> traverse g vs <*> traverse i alts
   g' (Let ann ds e) = Let ann <$> traverse f ds <*> g e
+  g' (TypeApp ann e ty) = TypeApp ann <$> g e <*> pure ty
   g' e = pure e
 
   h' (LiteralBinder a b) = LiteralBinder a <$> handleLiteral h b

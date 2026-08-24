@@ -273,6 +273,11 @@ exprToJSON (App ann f x)            = object [ "type"        .= "App"
                                              , "abstraction" .= exprToJSON f
                                              , "argument"    .= exprToJSON x
                                              ]
+exprToJSON (TypeApp ann e t)        = object [ "type"          .= ("TypeApp" :: String)
+                                             , "annotation"    .= annToJSON ann
+                                             , "expression"    .= exprToJSON e
+                                             , "type_argument" .= coreFnTypeToJSON t
+                                             ]
 exprToJSON (Case ann ss cs)         = object [ "type"        .= "Case"
                                              , "annotation"  .= annToJSON ann
                                              , "caseExpressions"

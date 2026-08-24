@@ -11,6 +11,7 @@ import Language.PureScript.AST.Literals (Literal)
 import Language.PureScript.CoreFn.Binders (Binder)
 import Language.PureScript.Names (Ident, ProperName, ProperNameType(..), Qualified)
 import Language.PureScript.PSString (PSString)
+import Language.PureScript.CoreFn.Ann (CoreFnType)
 
 -- |
 -- Data type for expressions and terms
@@ -52,6 +53,10 @@ data Expr a
   -- A let binding
   --
   | Let a [Bind a] (Expr a)
+  -- |
+  -- A type application
+  --
+  | TypeApp a (Expr a) CoreFnType
   deriving (Eq, Ord, Show, Functor)
 
 -- |
@@ -105,6 +110,7 @@ extractAnn (App a _ _) = a
 extractAnn (Var a _) = a
 extractAnn (Case a _ _) = a
 extractAnn (Let a _ _) = a
+extractAnn (TypeApp a _ _) = a
 
 
 -- |
@@ -120,3 +126,4 @@ modifyAnn f (App a b c)            = App (f a) b c
 modifyAnn f (Var a b)              = Var (f a) b
 modifyAnn f (Case a b c)           = Case (f a) b c
 modifyAnn f (Let a b c)            = Let (f a) b c
+modifyAnn f (TypeApp a b c)        = TypeApp (f a) b c
