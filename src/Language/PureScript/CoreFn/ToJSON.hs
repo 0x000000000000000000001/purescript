@@ -116,7 +116,7 @@ annToJSON (ss, _, mty, m) = do
     Nothing -> pure Null
     Just ty -> toJSON <$> internType ty
   pure $ object [ "sourceSpan"  .= sourceSpanToJSON ss
-                , "typeId"      .= typeVal
+                , "type"        .= typeVal
                 , "meta"        .= maybe Null metaToJSON m
                 ]
 
