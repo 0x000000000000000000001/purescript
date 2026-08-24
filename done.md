@@ -1,63 +1,104 @@
-# Résumé : Introduction de `TypeApp` dans le TAST v2 (CoreFn)
+# Intégration de `VisibleTypeApp` (`@Type`) dans l'AST CoreFn
 
-## Le Problème
-Auparavant, le compilateur PureScript effaçait systématiquement les informations d'instanciation de type au niveau des appels de fonctions (type erasure).
-Lorsqu'une fonction polymorphe (comme `append` ou `show`) était appelée, le backend recevait uniquement l'application du dictionnaire de type classe, sans connaître le type exact qui avait été instancié. Les backends AOT (comme `gopurs`, `purust`, etc.) devaient donc utiliser des types dynamiques (`interface{}` en Go, ou pointeurs virtuels) pour gérer l'exécution, ce qui nuisait aux performances.
+## Contexte
+Le compilateur PureScript (fork TAST) a été modifié pour propager les applications de types explicites (Visible Type Applications, ex: `foo @Int`) depuis l'AST source jusqu'à l'AST CoreFn (`tcorefn`), afin de fournir une échappatoire manuelle d'instanciation de type pour les backends AOT (`gopurs`, `purust`).
 
-## La Solution
-Nous avons introduit un nouveau nœud `TypeApp` au niveau des expressions (`Expr`) dans le CoreFn (l'AST final de PureScript).
-Ce nœud représente l'application d'un type à une expression (l'équivalent de la syntaxe `@Type` en PureScript).
-Désormais, l'information de type instanciée n'est plus effacée. Le backend sait exactement avec quel type une fonction polymorphe a été appelée, **avant** même de recevoir le dictionnaire de type classe.
+> **Note importante** : Seules les instanciations *explicites* génèrent un nœud `TypeApp` dans CoreFn. Les instanciations *implicites* (réalisées silencieusement par le TypeChecker) ne génèrent **pas** de `TypeApp` afin d'éviter une explosion de la taille du fichier `corefn.json` (qui causait des OOM sur les parsers JS comme `purs-backend-es`). Pour les types implicites, les backends AOT doivent utiliser la fonction `unify` existante (ex: dans `PureScript.Backend.Optimizer.Substitute`) pour comparer le type générique d'une fonction avec son type instancié (`ann.type` dans TAST v2).
 
-## Exemple concret
+## Modifications apportées
 
-### Code PureScript
+1. **`Language.PureScript.CoreFn.Expr`** : Ajout du constructeur `TypeApp (Ann, Expr a) SourceType` au type `Expr a`.
+2. **`Language.PureScript.CoreFn.Desugar`** : Modification de `exprToCoreFn` pour transformer `A.VisibleTypeApp` en `E.TypeApp`.
+3. **`Language.PureScript.CoreFn.ToJSON`** : Ajout de la sérialisation JSON avec un champ `typeArgument` pour respecter le `camelCase`.
+4. **`purescript-backend-optimizer`** : Ajout du support de `ExprTypeApp` dans le décodage JSON (`Json.purs`), la structure AST (`CoreFn.purs`), et l'inférence (`Monomorphize.purs`, `FreeVars.purs`).
+
+## Exemple de code PureScript
+
 ```purescript
-"Age: " <> show a
--- Correspond à l'appel : append "Age: " (show a)
-```
-La fonction `append` a le type `forall a. Semigroup a => a -> a -> a`. Ici, elle est instanciée pour le type `String`.
+module Test where
 
-### Avant (TAST v1 / CoreFn standard)
-Le backend recevait `append` directement appliqué à son dictionnaire `semigroupString`. L'information `String` était perdue.
-```json
-{
-  "type": "App",
-  "abstraction": {
-    "type": "Var",
-    "value": { "identifier": "append" }
-  },
-  "argument": {
-    "type": "Var",
-    "value": { "identifier": "semigroupString" }
-  }
-}
+import Prelude
+
+foo :: forall a. a -> a
+foo x = x
+
+bar :: Int -> Int
+bar = foo @Int
 ```
 
-### Après (TAST v2 avec `TypeApp`)
-Le compilateur intercale un nœud `TypeApp` explicite. L'expression `append` reçoit d'abord son paramètre de type (`String`), puis, encapsulé dans un `App`, l'argument classique (le dictionnaire).
+## Résultat JSON (`tcorefn`)
+
+Voici à quoi ressemble le nœud sérialisé pour `foo @Int` :
+
 ```json
 {
-  "type": "App",
-  "abstraction": {
-    "type": "TypeApp",
-    "expression": {
-      "type": "Var",
-      "value": { "identifier": "append" }
+  "type": "TypeApp",
+  "annotation": {
+    "sourceSpan": {
+      "start": [9, 7],
+      "name": "/path/to/Test.purs",
+      "end": [9, 15]
     },
-    "typeArgument": {
-      "type": "TypeConstructor",
-      "name": "String"
-    }
+    "type": {
+      "type": "Func",
+      "argument": {
+        "type": "TypeConstructor",
+        "name": "Int"
+      },
+      "return": {
+        "type": "TypeConstructor",
+        "name": "Int"
+      }
+    },
+    "meta": null
   },
-  "argument": {
+  "expression": {
     "type": "Var",
-    "value": { "identifier": "semigroupString" }
+    "annotation": {
+      "sourceSpan": {
+        "start": [9, 7],
+        "name": "/path/to/Test.purs",
+        "end": [9, 10]
+      },
+      "type": {
+        "type": "ForAll",
+        "visibility": "TypeVarInvisible",
+        "name": "a",
+        "body": {
+          "type": "Func",
+          "argument": {
+            "type": "TypeVar",
+            "name": "a"
+          },
+          "return": {
+            "type": "TypeVar",
+            "name": "a"
+          }
+        }
+      },
+      "meta": null
+    },
+    "value": "Test.foo"
+  },
+  "typeArgument": {
+    "type": "TypeConstructor",
+    "name": "Int"
   }
 }
 ```
 
-## Conséquences pour les backends AOT (gopurs, purust, etc.)
-1. **Monomorphisation Native** : Lorsqu'un parseur de backend rencontre un `TypeApp`, il sait exactement quel type est en jeu. Il peut générer un appel à une fonction monomorphisée stricte (ex: `append_String(x, y)`) au lieu de dépendre d'interfaces génériques.
-2. **Élimination des Dictionnaires Dynamiques** : Puisque la fonction appelée est statiquement connue (`append_String`), le backend peut choisir d'ignorer complètement l'application du dictionnaire `semigroupString` (le nœud `App` qui suit le `TypeApp`), car le comportement est déjà compilé en dur.
-3. **Ordre de résolution** : Dans le cas de fonctions à multiples variables (ex: `forall a b.`), les nœuds `TypeApp` s'emboîtent. L'ordre des `TypeApp` depuis la `Var` originelle correspond exactement à l'ordre de déclaration des variables dans le `forall` de la signature de la fonction. Le premier `TypeApp` instancie `a`, le second `TypeApp` englobant instancie `b`.
+## Utilisation côté Backend (Ex: `gopurs`)
+
+Pour exploiter ce nouveau constructeur dans un backend via `purescript-backend-optimizer` :
+
+```purescript
+import PureScript.Backend.Optimizer.CoreFn (Expr(..))
+
+-- Dans la passe d'analyse, d'optimisation, ou de génération :
+go expr = case expr of
+  ExprTypeApp ann expr typeArg ->
+    -- 'expr' est l'expression d'origine (ex: le Var "foo")
+    -- 'typeArg' est le type explicitement appliqué (ex: Int)
+    -- On délègue ou on utilise l'information pour forcer la monomorphisation manuelle.
+    go expr
+```
