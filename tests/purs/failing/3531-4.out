@@ -13,7 +13,7 @@ at tests/purs/failing/3531-4.purs:21:7 - 21:27 (line 21, column 7 - line 21, col
     [33mMain.c3[0m
 
 
-while applying a function [33mc[0m
+while applying a function [33m(((c)))[0m
   of type [33mC @t0 @t1 t2 t3 => Proxy @t0 t2 -> Proxy @t1 t3 -> Boolean[0m
   to argument [33mProxy[0m
 while inferring the type of [33mc Proxy[0m
