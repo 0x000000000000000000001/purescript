@@ -9,7 +9,7 @@ module Language.PureScript.CoreFn.ToJSON
 
 import Prelude
 
-import Control.Arrow ()
+import Control.Arrow ((***))
 import Data.Either (isLeft)
 import Data.Map.Strict qualified as M
 import Data.Aeson (ToJSON(..), Value(..), object)
@@ -34,11 +34,11 @@ internType :: CoreFnType -> TypeTableState Int
 internType ty = do
   (m, nextId, table) <- get
   case M.lookup ty m of
-    Just tid -> return tid
+    Just id -> return id
     Nothing -> do
-      let tid = nextId
-      put (M.insert ty tid m, nextId + 1, (tid, ty) : table)
-      return tid
+      let id = nextId
+      put (M.insert ty id m, nextId + 1, (id, ty) : table)
+      return id
 
 runTypeTable :: TypeTableState a -> (a, [Value])
 runTypeTable m = 
@@ -46,7 +46,6 @@ runTypeTable m =
       -- table is accumulated in reverse order
       sortedTable = map snd $ reverse table
   in (res, map coreFnTypeToJSON sortedTable)
-
 
 constructorTypeToJSON :: ConstructorType -> Value
 constructorTypeToJSON ProductType = toJSON "ProductType"
@@ -147,19 +146,15 @@ literalToJSON _ (BooleanLiteral b)
     , "value"        .= b
     ]
 literalToJSON t (ArrayLiteral xs)
-  = do
-    xs' <- mapM t xs
-    pure $ object
-      [ "literalType"  .= "ArrayLiteral"
-      , "value"        .= xs'
-      ]
+  = pure $ object
+    [ "literalType"  .= "ArrayLiteral"
+    , "value"        .= map t xs
+    ]
 literalToJSON t (ObjectLiteral xs)
-  = do
-    xs' <- recordToJSON t xs
-    pure $ object
-      [ "literalType"    .= "ObjectLiteral"
-      , "value"          .= xs'
-      ]
+  = pure $ object
+    [ "literalType"    .= "ObjectLiteral"
+    , "value"          .= recordToJSON t xs
+    ]
 
 identToJSON :: Ident -> Value
 identToJSON = toJSON . runIdent
@@ -183,25 +178,21 @@ moduleNameToJSON :: ModuleName -> Value
 moduleNameToJSON (ModuleName name) = toJSON (T.splitOn (T.pack ".") name)
 
 moduleToJSON :: Version -> Module Ann -> Value
-moduleToJSON v m = 
+moduleToJSON v m =
   let (res, typeTableFinal) = runTypeTable $ do
          decls' <- mapM bindToJSON (moduleDecls m)
          foreignAnns' <- mapM (\(ann, ident) -> do
             annVal <- annToJSON ann
             pure (T.unpack (Language.PureScript.Names.runIdent ident) .= annVal)
           ) (moduleForeign m)
-         imports' <- mapM (\(ann, mn) -> do
-            annVal <- annToJSON ann
-            pure $ object [ "annotation" .= annVal, "moduleName" .= moduleNameToJSON mn ]
-          ) (moduleImports m)
-         pure (decls', foreignAnns', imports')
+         pure (decls', foreignAnns')
          
-      (declsValFinal, foreignAnnsFinal, importsFinal) = res
+      (declsValFinal, foreignAnnsFinal) = res
   in object
   [ "sourceSpan" .= sourceSpanToJSON (moduleSourceSpan m)
   , "moduleName" .= moduleNameToJSON (moduleName m)
   , "modulePath" .= toJSON (modulePath m)
-  , "imports"    .= importsFinal
+  , "imports"    .= map importToJSON (moduleImports m)
   , "exports"    .= map identToJSON (moduleExports m)
   , "reExports"  .= reExportsToJSON (moduleReExports m)
   , "foreign"    .= map (identToJSON . snd) (moduleForeign m)
@@ -215,6 +206,11 @@ moduleToJSON v m =
   ]
 
   where
+  importToJSON (ann,mn) = object
+    [ "annotation" .= annToJSON ann
+    , "moduleName" .= moduleNameToJSON mn
+    ]
+
   reExportsToJSON :: M.Map ModuleName [Ident] -> Value
   reExportsToJSON = toJSON . M.map (map runIdent)
 
@@ -222,29 +218,22 @@ moduleToJSON v m =
 
 bindToJSON :: Bind Ann -> TypeTableState Value
 bindToJSON (NonRec ann n e)
-  = do
-    annVal <- annToJSON ann
-    eVal <- exprToJSON e
-    pure $ object
-      [ "bindType"   .= "NonRec"
-      , "annotation" .= annVal
-      , "identifier" .= identToJSON n
-      , "expression" .= eVal
-      ]
+  = pure $ object
+    [ "bindType"   .= "NonRec"
+    , "annotation" .= annToJSON ann
+    , "identifier" .= identToJSON n
+    , "expression" .= exprToJSON e
+    ]
 bindToJSON (Rec bs)
-  = do
-    bsVal <- mapM (\((ann, n), e) -> do
-                      annVal <- annToJSON ann
-                      eVal <- exprToJSON e
-                      pure $ object
-                        [ "identifier"  .= identToJSON n
-                        , "annotation"   .= annVal
-                        , "expression"   .= eVal
-                        ]) bs
-    pure $ object
-      [ "bindType"   .= "Rec"
-      , "binds"      .= bsVal
-      ]
+  = pure $ object
+    [ "bindType"   .= "Rec"
+    , "binds"      .= map (\((ann, n), e)
+                                  -> object
+                                      [ "identifier"  .= identToJSON n
+                                      , "annotation"   .= annToJSON ann
+                                      , "expression"   .= exprToJSON e
+                                       ]) bs
+    ]
 
 dataDeclToJSON :: DataDecl -> Value
 dataDeclToJSON (DataDecl name typeVars ctors) = object
@@ -282,156 +271,99 @@ recordToJSON :: (a -> TypeTableState Value) -> [(PSString, a)] -> TypeTableState
 recordToJSON f xs = do
   xs' <- mapM (\(k, v) -> do
     v' <- f v
-    pure (toJSON (Language.PureScript.PSString.decodeStringWithReplacement k), v')) xs
-  -- The original code did: toJSON . map (toJSON *** f)
-  -- Data.Aeson's ToJSON for (a,b) emits an array [a,b] if it's not text keys, but for String keys it might emit an object? 
-  -- No, recordToJSON emitted an array of tuples in the original.
-  -- Wait, original was: recordToJSON f = toJSON . map (toJSON *** f)
-  -- toJSON on PSString converts it to Value (probably String).
-  -- So `(toJSON k, v')` is a tuple `(Value, Value)`. `toJSON` on a list of tuples `[(Value, Value)]` makes a `[[Value, Value]]`.
+    pure (toJSON k, v')) xs
   pure $ toJSON xs'
 
-
 exprToJSON :: Expr Ann -> TypeTableState Value
-exprToJSON (Var ann i)              = do
-                                        annVal <- annToJSON ann
-                                        pure $ object [ "type"        .= toJSON "Var"
-                                             , "annotation"  .= annVal
+exprToJSON (Var ann i)              = object [ "type"        .= toJSON "Var"
+                                             , "annotation"  .= annToJSON ann
                                              , "value"       .= qualifiedToJSON runIdent i
                                              ]
-exprToJSON (Literal ann l)          = do
-                                        annVal <- annToJSON ann
-                                        lVal <- literalToJSON exprToJSON l
-                                        pure $ object [ "type"        .= "Literal"
-                                             , "annotation"  .= annVal
-                                             , "value"       .= lVal
+exprToJSON (Literal ann l)          = object [ "type"        .= "Literal"
+                                             , "annotation"  .= annToJSON ann
+                                             , "value"       .=  literalToJSON exprToJSON l
                                              ]
-exprToJSON (Constructor ann d c is) = do
-                                        annVal <- annToJSON ann
-                                        pure $ object [ "type"        .= "Constructor"
-                                             , "annotation"  .= annVal
+exprToJSON (Constructor ann d c is) = object [ "type"        .= "Constructor"
+                                             , "annotation"  .= annToJSON ann
                                              , "typeName"    .= properNameToJSON d
                                              , "name"        .= properNameToJSON c
                                              , "constructorName" .= properNameToJSON c
                                              , "fields"      .= map identToJSON is
                                              , "fieldNames"  .= map identToJSON is
                                              ]
-exprToJSON (Accessor ann f r)       = do
-                                        annVal <- annToJSON ann
-                                        rVal <- exprToJSON r
-                                        pure $ object [ "type"        .= "Accessor"
-                                             , "annotation"  .= annVal
+exprToJSON (Accessor ann f r)       = object [ "type"        .= "Accessor"
+                                             , "annotation"  .= annToJSON ann
                                              , "fieldName"   .= f
-                                             , "expression"  .= rVal
+                                             , "expression"  .= exprToJSON r
                                              ]
 exprToJSON (ObjectUpdate ann r copy fs)
-                                    = do
-                                        annVal <- annToJSON ann
-                                        rVal <- exprToJSON r
-                                        fsVal <- recordToJSON exprToJSON fs
-                                        pure $ object [ "type"        .= "ObjectUpdate"
-                                             , "annotation"  .= annVal
-                                             , "expression"  .= rVal
+                                    = pure $ object [ "type"        .= "ObjectUpdate"
+                                             , "annotation"  .= annToJSON ann
+                                             , "expression"  .= exprToJSON r
                                              , "copy"        .= toJSON copy
-                                             , "updates"     .= fsVal
+                                             , "updates"     .= recordToJSON exprToJSON fs
                                              ]
-exprToJSON (Abs ann p b)            = do
-                                        annVal <- annToJSON ann
-                                        bVal <- exprToJSON b
-                                        pure $ object [ "type"        .= "Abs"
-                                             , "annotation"  .= annVal
+exprToJSON (Abs ann p b)            = object [ "type"        .= "Abs"
+                                             , "annotation"  .= annToJSON ann
                                              , "argument"    .= identToJSON p
-                                             , "body"        .= bVal
+                                             , "body"        .= exprToJSON b
                                              ]
-exprToJSON (App ann f x)            = do
-                                        annVal <- annToJSON ann
-                                        fVal <- exprToJSON f
-                                        xVal <- exprToJSON x
-                                        pure $ object [ "type"        .= "App"
-                                             , "annotation"  .= annVal
-                                             , "abstraction" .= fVal
-                                             , "argument"    .= xVal
+exprToJSON (App ann f x)            = object [ "type"        .= "App"
+                                             , "annotation"  .= annToJSON ann
+                                             , "abstraction" .= exprToJSON f
+                                             , "argument"    .= exprToJSON x
                                              ]
-exprToJSON (TypeApp ann e t)        = do
-                                        annVal <- annToJSON ann
-                                        eVal <- exprToJSON e
-                                        pure $ object [ "type"          .= ("TypeApp" :: String)
-                                             , "annotation"    .= annVal
-                                             , "expression"    .= eVal
+exprToJSON (TypeApp ann e t)        = object [ "type"          .= ("TypeApp" :: String)
+                                             , "annotation"    .= annToJSON ann
+                                             , "expression"    .= exprToJSON e
                                              , "typeArgument"  .= coreFnTypeToJSON t
                                              ]
-exprToJSON (Case ann ss cs)         = do
-                                        annVal <- annToJSON ann
-                                        ssVal <- mapM exprToJSON ss
-                                        csVal <- mapM caseAlternativeToJSON cs
-                                        pure $ object [ "type"        .= "Case"
-                                             , "annotation"  .= annVal
-                                             , "caseExpressions" .= ssVal
-                                             , "caseAlternatives" .= csVal
+exprToJSON (Case ann ss cs)         = object [ "type"        .= "Case"
+                                             , "annotation"  .= annToJSON ann
+                                             , "caseExpressions"
+                                                                    .= map exprToJSON ss
+                                             , "caseAlternatives"
+                                                                    .= map caseAlternativeToJSON cs
                                              ]
-exprToJSON (Let ann bs e)           = do
-                                        annVal <- annToJSON ann
-                                        bsVal <- mapM bindToJSON bs
-                                        eVal <- exprToJSON e
-                                        pure $ object [ "type"        .= "Let" 
-                                             , "annotation"  .= annVal
-                                             , "binds"       .= bsVal
-                                             , "expression"  .= eVal
+exprToJSON (Let ann bs e)           = object [ "type"        .= "Let" 
+                                             , "annotation"  .= annToJSON ann
+                                             , "binds"       .= map bindToJSON bs
+                                             , "expression"  .= exprToJSON e
                                              ]
 
 caseAlternativeToJSON :: CaseAlternative Ann -> TypeTableState Value
-caseAlternativeToJSON (CaseAlternative bs r') = do
-  bsVal <- mapM binderToJSON bs
+caseAlternativeToJSON (CaseAlternative bs r') =
   let isGuarded = isLeft r'
-  exprsVal <- case r' of
-               Left rs -> do
-                 rs' <- mapM (\(g, e) -> do
-                                gVal <- exprToJSON g
-                                eVal <- exprToJSON e
-                                pure $ object [ "guard" .= gVal, "expression" .= eVal ]
-                             ) rs
-                 pure $ toJSON rs'
-               Right r -> exprToJSON r
-  pure $ object
-      [ "binders"     .= bsVal
+  in object
+      [ "binders"     .= toJSON (map binderToJSON bs)
       , "isGuarded"   .= toJSON isGuarded
-      , (if isGuarded then "expressions" else "expression") .= exprsVal
+      , (if isGuarded then "expressions" else "expression")
+         .= case r' of
+             Left rs -> toJSON $ map (\(g, e) -> object [ "guard" .= exprToJSON g, "expression" .= exprToJSON e]) rs
+             Right r -> exprToJSON r
       ]
 
 binderToJSON :: Binder Ann -> TypeTableState Value
-binderToJSON (VarBinder ann v)              = do
-                                                annVal <- annToJSON ann
-                                                pure $ object [ "binderType"  .= "VarBinder"
-                                                     , "annotation"  .= annVal
+binderToJSON (VarBinder ann v)              = object [ "binderType"  .= "VarBinder"
+                                                     , "annotation"  .= annToJSON ann
                                                      , "identifier"  .= identToJSON v
                                                      ]
-binderToJSON (NullBinder ann)               = do
-                                                annVal <- annToJSON ann
-                                                pure $ object [ "binderType"  .= "NullBinder"
-                                                     , "annotation"  .= annVal
+binderToJSON (NullBinder ann)               = object [ "binderType"  .= "NullBinder"
+                                                     , "annotation"  .= annToJSON ann
                                                      ]
-binderToJSON (LiteralBinder ann l)          = do
-                                                annVal <- annToJSON ann
-                                                lVal <- literalToJSON binderToJSON l
-                                                pure $ object [ "binderType"  .= "LiteralBinder"
-                                                     , "annotation"  .= annVal
-                                                     , "literal"     .= lVal
+binderToJSON (LiteralBinder ann l)          = object [ "binderType"  .= "LiteralBinder"
+                                                     , "annotation"  .= annToJSON ann
+                                                     , "literal"     .= literalToJSON binderToJSON l
                                                      ]
-binderToJSON (ConstructorBinder ann d c bs) = do
-                                                annVal <- annToJSON ann
-                                                bsVal <- mapM binderToJSON bs
-                                                pure $ object [ "binderType"  .= "ConstructorBinder"
-                                                     , "annotation"  .= annVal
+binderToJSON (ConstructorBinder ann d c bs) = object [ "binderType"  .= "ConstructorBinder"
+                                                     , "annotation"  .= annToJSON ann
                                                      , "typeName"    .= qualifiedToJSON runProperName d
                                                      , "name"        .= qualifiedToJSON runProperName c
                                                      , "constructorName" .= qualifiedToJSON runProperName c
-                                                     , "binders"     .= bsVal
+                                                     , "binders"     .= map binderToJSON bs
                                                      ]
-binderToJSON (NamedBinder ann n b)          = do
-                                                annVal <- annToJSON ann
-                                                bVal <- binderToJSON b
-                                                pure $ object [ "binderType"  .= "NamedBinder"
-                                                     , "annotation"  .= annVal
+binderToJSON (NamedBinder ann n b)          = object [ "binderType"  .= "NamedBinder"
+                                                     , "annotation"  .= annToJSON ann
                                                      , "identifier"  .= identToJSON n
-                                                     , "binder"      .= bVal
+                                                     , "binder"      .= binderToJSON b
                                                      ]
