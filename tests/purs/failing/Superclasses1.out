@@ -9,17 +9,6 @@ at tests/purs/failing/Superclasses1.purs:12:1 - 13:17 (line 12, column 1 - line 
 
 while checking that expression [33m#dict Su[0m
   has type [33mSu$Dict t0[0m
-while applying a function [33mCl$Dict[0m
-  of type [33m{ "Su0" :: Record ... -> Su$Dict t0[0m
-          [33m, cl :: t0 -> t0 -> t0             [0m
-          [33m}                                  [0m
-          [33m-> Cl$Dict t0                      [0m
-  to argument [33m{ cl: \n ->            [0m
-              [33m        \m ->          [0m
-              [33m          ...          [0m
-              [33m, "Su0": \$__unused -> [0m
-              [33m           #dict Su    [0m
-              [33m}                      [0m
 in value declaration [33mclNumber[0m
 
 where [33mt0[0m is an unknown type

@@ -15,7 +15,7 @@ while solving type class constraint
 [33m                 | r0      [0m
 [33m                 )         [0m
 [33m                           [0m
-while applying a function [33m(union)[0m
+while applying a function [33munion[0m
   of type [33mLacks @Type t1 t2 => S t1 -> R t2[0m
   to argument [33mS[0m
 while checking that expression [33munion S[0m

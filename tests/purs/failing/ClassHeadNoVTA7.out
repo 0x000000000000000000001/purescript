@@ -9,7 +9,7 @@ at tests/purs/failing/ClassHeadNoVTA7.purs:12:8 - 12:26 (line 12, column 8 - lin
   [33m                              [0m
   The instance head contains unknown type variables. Consider adding a type annotation.
 
-while applying a function [33m((testMethod))[0m
+while applying a function [33mtestMethod[0m
   of type [33mTestClass @t0 t1 t2 => Maybe t1 -> Int[0m
   to argument [33mNothing[0m
 while checking that expression [33mtestMethod Nothing[0m

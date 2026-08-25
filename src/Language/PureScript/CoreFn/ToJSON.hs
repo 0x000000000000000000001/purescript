@@ -28,7 +28,7 @@ import Language.PureScript.Names (Ident, ModuleName(..), ProperName(..), Qualifi
 import Language.PureScript.PSString (PSString, decodeStringWithReplacement)
 
 
-type TypeTableState = State (M.Map CoreFnType Int, Int, [(Int, CoreFnType)])
+type TypeTableState = State (M.Map CoreFnType Int, Int, [(Int, Value)])
 
 internType :: CoreFnType -> TypeTableState Int
 internType ty = do
@@ -37,7 +37,10 @@ internType ty = do
     Just tid -> return tid
     Nothing -> do
       let tid = nextId
-      put (M.insert ty tid m, nextId + 1, (tid, ty) : table)
+      put (M.insert ty tid m, nextId + 1, table)
+      val <- coreFnTypeToJSON ty
+      (m', nextId', table') <- get
+      put (m', nextId', (tid, val) : table')
       return tid
 
 runTypeTable :: TypeTableState a -> (a, [Value])
@@ -45,7 +48,7 @@ runTypeTable m =
   let (res, (_, _, table)) = runState m (M.empty, 0, [])
       -- table is accumulated in reverse order
       sortedTable = map snd $ reverse table
-  in (res, map coreFnTypeToJSON sortedTable)
+  in (res, sortedTable)
 
 
 constructorTypeToJSON :: ConstructorType -> Value
@@ -75,40 +78,58 @@ sourceSpanToJSON (SourceSpan _ spanStart spanEnd) =
          , "end"   .= spanEnd
          ]
 
-coreFnTypeToJSON :: CoreFnType -> Value
-coreFnTypeToJSON CFInt = object [ "type" .= toJSON "Int" ]
-coreFnTypeToJSON CFNumber = object [ "type" .= toJSON "Number" ]
-coreFnTypeToJSON CFString = object [ "type" .= toJSON "String" ]
-coreFnTypeToJSON CFBoolean = object [ "type" .= toJSON "Boolean" ]
-coreFnTypeToJSON CFChar = object [ "type" .= toJSON "Char" ]
-coreFnTypeToJSON CFUnit = object [ "type" .= toJSON "Unit" ]
-coreFnTypeToJSON CFAny = object [ "type" .= toJSON "Any" ]
-coreFnTypeToJSON (CFTypeLevelString s) = object [ "type" .= toJSON "TypeLevelString", "value" .= Language.PureScript.PSString.decodeStringWithReplacement s ]
-coreFnTypeToJSON (CFArray ty) = object [ "type" .= toJSON "Array", "element" .= coreFnTypeToJSON ty ]
-coreFnTypeToJSON (CFTypeVar name) = object [ "type" .= toJSON "TypeVar", "name" .= toJSON name ]
-coreFnTypeToJSON (CFAdt qname args) =
+coreFnTypeToJSON :: CoreFnType -> TypeTableState Value
+coreFnTypeToJSON CFInt = pure $ object [ "type" .= toJSON "Int" ]
+coreFnTypeToJSON CFNumber = pure $ object [ "type" .= toJSON "Number" ]
+coreFnTypeToJSON CFString = pure $ object [ "type" .= toJSON "String" ]
+coreFnTypeToJSON CFBoolean = pure $ object [ "type" .= toJSON "Boolean" ]
+coreFnTypeToJSON CFChar = pure $ object [ "type" .= toJSON "Char" ]
+coreFnTypeToJSON CFUnit = pure $ object [ "type" .= toJSON "Unit" ]
+coreFnTypeToJSON CFAny = pure $ object [ "type" .= toJSON "Any" ]
+coreFnTypeToJSON (CFTypeLevelString s) = pure $ object [ "type" .= toJSON "TypeLevelString", "value" .= Language.PureScript.PSString.decodeStringWithReplacement s ]
+coreFnTypeToJSON (CFArray ty) = do
+  idTy <- internType ty
+  pure $ object [ "type" .= toJSON "Array", "element" .= idTy ]
+coreFnTypeToJSON (CFTypeVar name) = pure $ object [ "type" .= toJSON "TypeVar", "name" .= toJSON name ]
+coreFnTypeToJSON (CFAdt qname args) = do
   let parts = case qname of
                 Qualified (ByModuleName (ModuleName mn')) name -> T.splitOn (T.pack ".") mn' ++ [runProperName name]
                 Qualified _ name -> [runProperName name]
-  in object [ "type" .= toJSON "Adt", "fqn" .= toJSON parts, "args" .= toJSON (map coreFnTypeToJSON args) ]
-coreFnTypeToJSON (CFTypeApp constructor args) =
-  object [ "type" .= toJSON "TypeApp", "constructor" .= coreFnTypeToJSON constructor, "args" .= toJSON (map coreFnTypeToJSON args) ]
-coreFnTypeToJSON (CFFunc args ret) = 
-  object [ "type" .= toJSON "Func", "args" .= toJSON (map coreFnTypeToJSON args), "ret" .= coreFnTypeToJSON ret ]
-coreFnTypeToJSON (CFRow fields tailTy) = 
-  let fieldToJSON (k, v) = object [ "label" .= Language.PureScript.PSString.decodeStringWithReplacement k, "type" .= coreFnTypeToJSON v ]
-  in object [ "type" .= toJSON "Row", "fields" .= toJSON (map fieldToJSON fields), "tail" .= maybe (toJSON Data.Aeson.Null) coreFnTypeToJSON tailTy ]
-coreFnTypeToJSON (CFRecord row) = 
-  object [ "type" .= toJSON "Record", "row" .= coreFnTypeToJSON row ]
-coreFnTypeToJSON (CFForAll vars body) = 
-  object [ "type" .= toJSON "ForAll", "vars" .= toJSON vars, "body" .= coreFnTypeToJSON body ]
-coreFnTypeToJSON (CFConstrainedType constraints body) = 
-  let constraintToJSON (qname, args) = 
+  args' <- mapM internType args
+  pure $ object [ "type" .= toJSON "Adt", "fqn" .= toJSON parts, "args" .= args' ]
+coreFnTypeToJSON (CFTypeApp constructor args) = do
+  cId <- internType constructor
+  aIds <- mapM internType args
+  pure $ object [ "type" .= toJSON "TypeApp", "constructor" .= cId, "args" .= aIds ]
+coreFnTypeToJSON (CFFunc args ret) = do
+  aIds <- mapM internType args
+  rId <- internType ret
+  pure $ object [ "type" .= toJSON "Func", "args" .= aIds, "ret" .= rId ]
+coreFnTypeToJSON (CFRow fields tailTy) = do
+  fields' <- mapM (\(k, v) -> do
+      vId <- internType v
+      pure $ object [ "label" .= Language.PureScript.PSString.decodeStringWithReplacement k, "type" .= vId ]
+    ) fields
+  tailId <- case tailTy of
+    Nothing -> pure Data.Aeson.Null
+    Just t -> toJSON <$> internType t
+  pure $ object [ "type" .= toJSON "Row", "fields" .= fields', "tail" .= tailId ]
+coreFnTypeToJSON (CFRecord row) = do
+  rId <- internType row
+  pure $ object [ "type" .= toJSON "Record", "row" .= rId ]
+coreFnTypeToJSON (CFForAll vars body) = do
+  bId <- internType body
+  pure $ object [ "type" .= toJSON "ForAll", "vars" .= toJSON vars, "body" .= bId ]
+coreFnTypeToJSON (CFConstrainedType constraints body) = do
+  let constraintToJSON (qname, args) = do
         let parts = case qname of
                       Qualified (ByModuleName (ModuleName mn')) name -> T.splitOn (T.pack ".") mn' ++ [runProperName name]
                       Qualified _ name -> [runProperName name]
-        in object [ "fqn" .= toJSON parts, "args" .= toJSON (map coreFnTypeToJSON args) ]
-  in object [ "type" .= toJSON "ConstrainedType", "constraints" .= toJSON (map constraintToJSON constraints), "body" .= coreFnTypeToJSON body ]
+        args' <- mapM internType args
+        pure $ object [ "fqn" .= toJSON parts, "args" .= args' ]
+  constraints' <- mapM constraintToJSON constraints
+  bId <- internType body
+  pure $ object [ "type" .= toJSON "ConstrainedType", "constraints" .= constraints', "body" .= bId ]
 
 annToJSON :: Ann -> TypeTableState Value
 annToJSON (ss, _, mty, m) = do
@@ -194,9 +215,11 @@ moduleToJSON v m =
             annVal <- annToJSON ann
             pure $ object [ "annotation" .= annVal, "moduleName" .= moduleNameToJSON mn ]
           ) (moduleImports m)
-         pure (decls', foreignAnns', imports')
+         dataDecls' <- mapM dataDeclToJSON (moduleDataDecls m)
+         classDecls' <- mapM classDeclToJSON (moduleClassDecls m)
+         pure (decls', foreignAnns', imports', dataDecls', classDecls')
          
-      (declsValFinal, foreignAnnsFinal, importsFinal) = res
+      (declsValFinal, foreignAnnsFinal, importsFinal, dataDeclsFinal, classDeclsFinal) = res
   in object
   [ "sourceSpan" .= sourceSpanToJSON (moduleSourceSpan m)
   , "moduleName" .= moduleNameToJSON (moduleName m)
@@ -207,8 +230,8 @@ moduleToJSON v m =
   , "foreign"    .= map (identToJSON . snd) (moduleForeign m)
   , "foreignAnnotations" .= object foreignAnnsFinal
   , "decls"      .= declsValFinal
-  , "dataDecls"  .= map dataDeclToJSON (moduleDataDecls m)
-  , "classDecls" .= map classDeclToJSON (moduleClassDecls m)
+  , "dataDecls"  .= dataDeclsFinal
+  , "classDecls" .= classDeclsFinal
   , "builtWith"  .= toJSON (showVersion v)
   , "comments"   .= map toJSON (moduleComments m)
   , "typeTable"  .= toJSON typeTableFinal
@@ -246,37 +269,45 @@ bindToJSON (Rec bs)
       , "binds"      .= bsVal
       ]
 
-dataDeclToJSON :: DataDecl -> Value
-dataDeclToJSON (DataDecl name typeVars ctors) = object
-  [ "name" .= properNameToJSON name
-  , "typeName" .= properNameToJSON name
-  , "vars" .= toJSON typeVars
-  , "typeVars" .= toJSON typeVars
-  , "constructors" .= map dataConstructorToJSON ctors
-  ]
+dataDeclToJSON :: DataDecl -> TypeTableState Value
+dataDeclToJSON (DataDecl name typeVars ctors) = do
+  ctors' <- mapM dataConstructorToJSON ctors
+  pure $ object
+    [ "name" .= properNameToJSON name
+    , "typeName" .= properNameToJSON name
+    , "vars" .= toJSON typeVars
+    , "typeVars" .= toJSON typeVars
+    , "constructors" .= ctors'
+    ]
 
-classDeclToJSON :: ClassDecl -> Value
-classDeclToJSON (ClassDecl name typeVars superclasses methods) =
-  let superclassToJSON (qname, args) = 
+classDeclToJSON :: ClassDecl -> TypeTableState Value
+classDeclToJSON (ClassDecl name typeVars superclasses methods) = do
+  let superclassToJSON (qname, args) = do
         let parts = case qname of
                       Qualified (ByModuleName (ModuleName mn')) name' -> T.splitOn (T.pack ".") mn' ++ [runProperName name']
                       Qualified _ name' -> [runProperName name']
-        in object [ "fqn" .= toJSON parts, "args" .= toJSON (map coreFnTypeToJSON args) ]
-      methodToJSON (ident, ty) =
-        object [ "name" .= runIdent ident, "type" .= coreFnTypeToJSON ty ]
-  in object [ "name" .= runProperName name
-            , "vars" .= toJSON typeVars
-            , "superclasses" .= toJSON (map superclassToJSON superclasses)
-            , "methods" .= toJSON (map methodToJSON methods)
-            ]
+        args' <- mapM (\t -> toJSON <$> internType t) args
+        pure $ object [ "fqn" .= toJSON parts, "args" .= args' ]
+  superclasses' <- mapM superclassToJSON superclasses
+  let methodToJSON (ident, ty) = do
+        ty' <- toJSON <$> internType ty
+        pure $ object [ "name" .= runIdent ident, "type" .= ty' ]
+  methods' <- mapM methodToJSON methods
+  pure $ object [ "name" .= runProperName name
+                , "vars" .= toJSON typeVars
+                , "superclasses" .= superclasses'
+                , "methods" .= methods'
+                ]
 
-dataConstructorToJSON :: DataConstructor -> Value
-dataConstructorToJSON (DataConstructor name fields) = object
-  [ "name" .= properNameToJSON name
-  , "constructorName" .= properNameToJSON name
-  , "fields" .= map coreFnTypeToJSON fields
-  , "fieldTypes" .= map coreFnTypeToJSON fields
-  ]
+dataConstructorToJSON :: DataConstructor -> TypeTableState Value
+dataConstructorToJSON (DataConstructor name fields) = do
+  fields' <- mapM (\t -> toJSON <$> internType t) fields
+  pure $ object
+    [ "name" .= properNameToJSON name
+    , "constructorName" .= properNameToJSON name
+    , "fields" .= fields'
+    , "fieldTypes" .= fields'
+    ]
 
 recordToJSON :: (a -> TypeTableState Value) -> [(PSString, a)] -> TypeTableState Value
 recordToJSON f xs = do
@@ -355,10 +386,11 @@ exprToJSON (App ann f x)            = do
 exprToJSON (TypeApp ann e t)        = do
                                         annVal <- annToJSON ann
                                         eVal <- exprToJSON e
+                                        tIdx <- toJSON <$> internType t
                                         pure $ object [ "type"          .= ("TypeApp" :: String)
                                              , "annotation"    .= annVal
                                              , "expression"    .= eVal
-                                             , "typeArgument"  .= coreFnTypeToJSON t
+                                             , "typeArgument"  .= tIdx
                                              ]
 exprToJSON (Case ann ss cs)         = do
                                         annVal <- annToJSON ann

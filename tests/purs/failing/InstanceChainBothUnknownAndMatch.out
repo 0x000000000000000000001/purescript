@@ -21,7 +21,7 @@ at tests/purs/failing/InstanceChainBothUnknownAndMatch.purs:15:13 - 15:53 (line 
     [33mInstanceChains.BothUnknownAndMatch.sameY[0m
 
 
-while applying a function [33m((same))[0m
+while applying a function [33msame[0m
   of type [33mSame @Type @Type t0 t1 t2 => t0 -> t1 -> Proxy @Symbol t2[0m
   to argument [33mProxy[0m
 while inferring the type of [33msame Proxy[0m

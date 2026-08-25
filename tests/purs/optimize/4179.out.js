@@ -10,18 +10,27 @@ var $runtime_lazy = function (name, moduleName, init) {
         return val;
     };
 };
-var $lazy_tcoable = /* #__PURE__ */ $runtime_lazy("tcoable", "Main", function () {
-    return function (v) {
+
+// This is a test that TCO isn't broken by unsafePartial.
+var tcoable = function ($copy_v) {
+    var $tco_done = false;
+    var $tco_result;
+    function $tco_loop(v) {
         if (v === 0) {
+            $tco_done = true;
             return "done";
         };
         if (v > 0) {
-            return $lazy_tcoable(45)(v - 1 | 0);
+            $copy_v = v - 1 | 0;
+            return;
         };
         throw new Error("Failed pattern match at Main (line 43, column 25 - line 45, column 31): " + [ v.constructor.name ]);
     };
-});
-var tcoable = /* #__PURE__ */ $lazy_tcoable(42);
+    while (!$tco_done) {
+        $tco_result = $tco_loop($copy_v);
+    };
+    return $tco_result;
+};
 var isOdd = function (n) {
     return n > 0 && !isEven(n - 1 | 0);
 };

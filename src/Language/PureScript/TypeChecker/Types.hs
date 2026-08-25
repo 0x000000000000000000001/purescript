@@ -328,7 +328,7 @@ instantiatePolyTypeWithUnknowns
 instantiatePolyTypeWithUnknowns val (ForAll _ _ ident mbK ty _) = do
   u <- maybe (internalCompilerError "Unelaborated forall") freshTypeWithKind mbK
   insertUnkName' u ident
-  instantiatePolyTypeWithUnknowns val $ replaceTypeVars ident u ty
+  instantiatePolyTypeWithUnknowns (VisibleTypeApp val u) $ replaceTypeVars ident u ty
 instantiatePolyTypeWithUnknowns val (ConstrainedType _ con ty) = do
   dicts <- getTypeClassDictionaries
   hints <- getHints
@@ -344,7 +344,7 @@ instantiatePolyTypeWithUnknownsUntilVisible
 instantiatePolyTypeWithUnknownsUntilVisible val (ForAll _ TypeVarInvisible ident mbK ty _) = do
   u <- maybe (internalCompilerError "Unelaborated forall") freshTypeWithKind mbK
   insertUnkName' u ident
-  instantiatePolyTypeWithUnknownsUntilVisible val $ replaceTypeVars ident u ty
+  instantiatePolyTypeWithUnknownsUntilVisible (VisibleTypeApp val u) $ replaceTypeVars ident u ty
 instantiatePolyTypeWithUnknownsUntilVisible val ty = return (val, ty)
 
 instantiateConstraint :: MonadState CheckState m => Expr -> Type SourceAnn -> m (Expr, Type SourceAnn)
