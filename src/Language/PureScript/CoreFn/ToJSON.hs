@@ -19,6 +19,7 @@ import Data.Aeson.Types (Pair)
 import Data.Version (Version, showVersion)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.List qualified
 import Control.Monad.State
 
 import Language.PureScript.AST.Literals (Literal(..))
