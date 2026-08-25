@@ -46,8 +46,7 @@ internType ty = do
 runTypeTable :: TypeTableState a -> (a, [Value])
 runTypeTable m = 
   let (res, (_, _, table)) = runState m (M.empty, 0, [])
-      -- table is accumulated in reverse order
-      sortedTable = map snd $ reverse table
+      sortedTable = map snd $ Data.List.sortOn fst table
   in (res, sortedTable)
 
 
