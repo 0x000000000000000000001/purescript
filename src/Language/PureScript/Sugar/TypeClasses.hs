@@ -301,7 +301,9 @@ typeClassMemberToDictionaryAccessor mn name args (TypeDeclaration (TypeDeclarati
       dictIdent = Ident "dict"
       dictObjIdent = Ident "v"
       ctor = ConstructorBinder ss (coerceProperName . dictTypeName <$> className) [VarBinder ss dictObjIdent]
-      acsr = Accessor (mkString $ runIdent ident) (Var ss (Qualified ByNullSourcePos dictObjIdent))
+      dictTy = foldl srcTypeApp (srcTypeConstructor (coerceProperName . dictTypeName <$> className)) (map (srcTypeVar . fst) args)
+      v = TypedValue False (Var ss (Qualified ByNullSourcePos dictObjIdent)) dictTy
+      acsr = TypedValue False (Accessor (mkString $ runIdent ident) v) ty
       visibility = second (const TypeVarVisible) <$> args
   in ValueDecl sa ident Private []
     [MkUnguarded (
