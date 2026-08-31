@@ -710,6 +710,7 @@ overTypes f = let (_, f', _) = everywhereOnValues id g id in f'
   where
   g :: Expr -> Expr
   g (TypedValue checkTy val t) = TypedValue checkTy val (f t)
+  g (VisibleTypeApp val t) = VisibleTypeApp val (f t)
   g (TypeClassDictionary c sco hints) =
     TypeClassDictionary
       (mapConstraintArgs (fmap f) c)
