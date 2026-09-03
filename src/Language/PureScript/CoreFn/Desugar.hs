@@ -26,7 +26,7 @@ import Language.PureScript.CoreFn.Expr qualified as E
 import Language.PureScript.CoreFn.Meta (ConstructorType(..), Meta(..))
 import Language.PureScript.CoreFn.Module (Module(..), DataDecl(..), DataConstructor(..), ClassDecl(..))
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.Environment (DataDeclType(..), TypeKind(..), Environment(..), NameKind(..), isDictTypeName, lookupConstructor, lookupValue)
+import Language.PureScript.Environment (DataDeclType(..), TypeKind(..), Environment(..), NameKind(..), isDictTypeName, lookupConstructor, lookupValue, tyBoolean)
 import Language.PureScript.Label (Label(..))
 import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), getQual)
 import Language.PureScript.PSString (PSString)
@@ -65,9 +65,6 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
   dedupeImports :: [(Ann, ModuleName)] -> [(Ann, ModuleName)]
   dedupeImports = fmap swap . M.toList . M.fromListWith const . fmap swap
 
-  ssA :: SourceSpan -> Ann
-  ssA ss = (ss, [], Nothing, Nothing)
-
   -- Extracts data declarations (schema) from AST to CoreFn representation.
   dataDeclToCoreFn :: A.Declaration -> [DataDecl]
   dataDeclToCoreFn (A.DataDeclaration _ Data tyName tyVars ctors) =
@@ -93,18 +90,21 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
 
   declToCoreFn :: A.Declaration -> [Bind Ann]
   declToCoreFn (A.DataDeclaration (ss, com) Newtype _ _ [ctor]) =
-    [NonRec (ss, [], Nothing, declMeta) (properToIdent $ A.dataCtorName ctor) $
-      Abs (ss, com, Nothing, Just IsNewtype) (Ident "x") (Var (ssAnn ss) $ Qualified ByNullSourcePos (Ident "x"))]
-    where
-    declMeta = isDictTypeName (A.dataCtorName ctor) `orEmpty` IsTypeClassConstructor
+    let
+      cname = A.dataCtorName ctor
+      qname = Qualified (ByModuleName mn) cname
+      ty = (\(_, _, t, _) -> t) <$> M.lookup qname (dataConstructors env)
+      declMeta = isDictTypeName cname `orEmpty` IsTypeClassConstructor
+    in [NonRec (ss, [], simplifyType env <$> ty, declMeta) (properToIdent cname) $
+      Abs (ss, com, simplifyType env <$> ty, Just IsNewtype) (Ident "x") (Var (ss, [], Nothing, Nothing) $ Qualified ByNullSourcePos (Ident "x"))]
   declToCoreFn d@(A.DataDeclaration _ Newtype _ _ _) =
     error $ "Found newtype with multiple constructors: " ++ show d
   declToCoreFn (A.DataDeclaration (ss, com) Data tyName _ ctors) =
     flip fmap ctors $ \ctorDecl ->
       let
         ctor = A.dataCtorName ctorDecl
-        (_, _, _, fields) = lookupConstructor env (Qualified (ByModuleName mn) ctor)
-      in NonRec (ssA ss) (properToIdent ctor) $ Constructor (ss, com, Nothing, Nothing) tyName ctor fields
+        (_, _, ctorTy, fields) = lookupConstructor env (Qualified (ByModuleName mn) ctor)
+      in NonRec (ss, [], Just (simplifyType env ctorTy), Nothing) (properToIdent ctor) $ Constructor (ss, com, Just (simplifyType env ctorTy), Nothing) tyName ctor fields
   declToCoreFn (A.DataBindingGroupDeclaration ds) =
     concatMap declToCoreFn ds
   declToCoreFn (A.ValueDecl (ss, com) name _ _ [A.MkUnguarded e]) =
@@ -156,10 +156,11 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
   exprToCoreFn _ com ty (A.Var ss ident) =
     Var (ss, com, simplifyType env <$> ty, getValueMeta ident) ident
   exprToCoreFn ss com ty (A.IfThenElse v1 v2 v3) =
-    Case (ss, com, simplifyType env <$> ty, Nothing) [exprToCoreFn ss [] Nothing v1]
-      [ CaseAlternative [LiteralBinder (ssAnn ss) $ BooleanLiteral True]
+    let boolTy = Just (simplifyType env tyBoolean)
+    in Case (ss, com, simplifyType env <$> ty, Nothing) [exprToCoreFn ss [] Nothing v1]
+      [ CaseAlternative [LiteralBinder (ss, [], boolTy, Nothing) $ BooleanLiteral True]
                         (Right $ exprToCoreFn ss [] Nothing v2)
-      , CaseAlternative [NullBinder (ssAnn ss)]
+      , CaseAlternative [NullBinder (ss, [], boolTy, Nothing)]
                         (Right $ exprToCoreFn ss [] Nothing v3) ]
   exprToCoreFn _ com ty (A.Constructor ss name) =
     Var (ss, com, simplifyType env <$> ty, Just $ getConstructorMeta name) $ fmap properToIdent name
