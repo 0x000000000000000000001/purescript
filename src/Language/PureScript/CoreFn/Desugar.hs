@@ -4,6 +4,7 @@ import Prelude
 import Protolude (ordNub, orEmpty)
 
 import Control.Arrow (second)
+import Control.Applicative ((<|>))
 
 import Data.Function (on)
 import Data.Maybe (mapMaybe, fromMaybe)
@@ -107,10 +108,10 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
   declToCoreFn (A.DataBindingGroupDeclaration ds) =
     concatMap declToCoreFn ds
   declToCoreFn (A.ValueDecl (ss, com) name _ _ [A.MkUnguarded e]) =
-    let ty = getExprType e
+    let ty = getExprType e <|> ((\(t,_,_) -> t) <$> M.lookup (Qualified (ByModuleName mn) name) (names env))
     in [NonRec (ss, [], simplifyType env <$> ty, Nothing) name (exprToCoreFn ss com Nothing e)]
   declToCoreFn (A.BindingGroupDeclaration ds) =
-    [Rec . NEL.toList $ fmap (\(((ss, com), name), _, e) -> (((ss, [], simplifyType env <$> getExprType e, Nothing), name), exprToCoreFn ss com Nothing e)) ds]
+    [Rec . NEL.toList $ fmap (\(((ss, com), name), _, e) -> (((ss, [], simplifyType env <$> (getExprType e <|> ((\(t,_,_) -> t) <$> M.lookup (Qualified (ByModuleName mn) name) (names env))), Nothing), name), exprToCoreFn ss com Nothing e)) ds]
   declToCoreFn _ = []
 
   -- Desugars expressions from AST to CoreFn representation.
