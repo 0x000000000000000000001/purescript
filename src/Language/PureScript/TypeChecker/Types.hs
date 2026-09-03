@@ -621,14 +621,14 @@ inferBinder
    . (MonadState CheckState m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
   => SourceType
   -> Binder
-  -> m (M.Map Ident (SourceSpan, SourceType))
-inferBinder _ NullBinder = return M.empty
-inferBinder val (LiteralBinder _ (StringLiteral _)) = unifyTypes val tyString >> return M.empty
-inferBinder val (LiteralBinder _ (CharLiteral _)) = unifyTypes val tyChar >> return M.empty
-inferBinder val (LiteralBinder _ (NumericLiteral (Left _))) = unifyTypes val tyInt >> return M.empty
-inferBinder val (LiteralBinder _ (NumericLiteral (Right _))) = unifyTypes val tyNumber >> return M.empty
-inferBinder val (LiteralBinder _ (BooleanLiteral _)) = unifyTypes val tyBoolean >> return M.empty
-inferBinder val (VarBinder ss name) = return $ M.singleton name (ss, val)
+  -> m (M.Map Ident (SourceSpan, SourceType), Binder)
+inferBinder val NullBinder = return (M.empty, TypedBinder val NullBinder)
+inferBinder val (LiteralBinder ss (StringLiteral s)) = unifyTypes val tyString >> return (M.empty, TypedBinder val (LiteralBinder ss (StringLiteral s)))
+inferBinder val (LiteralBinder ss (CharLiteral c)) = unifyTypes val tyChar >> return (M.empty, TypedBinder val (LiteralBinder ss (CharLiteral c)))
+inferBinder val (LiteralBinder ss (NumericLiteral (Left i))) = unifyTypes val tyInt >> return (M.empty, TypedBinder val (LiteralBinder ss (NumericLiteral (Left i))))
+inferBinder val (LiteralBinder ss (NumericLiteral (Right n))) = unifyTypes val tyNumber >> return (M.empty, TypedBinder val (LiteralBinder ss (NumericLiteral (Right n))))
+inferBinder val (LiteralBinder ss (BooleanLiteral b)) = unifyTypes val tyBoolean >> return (M.empty, TypedBinder val (LiteralBinder ss (BooleanLiteral b)))
+inferBinder val (VarBinder ss name) = return (M.singleton name (ss, val), TypedBinder val (VarBinder ss name))
 inferBinder val (ConstructorBinder ss ctor binders) = do
   env <- getEnv
   case M.lookup ctor (dataConstructors env) of
@@ -640,7 +640,10 @@ inferBinder val (ConstructorBinder ss ctor binders) = do
           actual = length binders
       unless (expected == actual) . throwError . errorMessage' ss $ IncorrectConstructorArity ctor expected actual
       unifyTypes ret val
-      M.unions <$> zipWithM inferBinder (reverse args) binders
+      res <- zipWithM inferBinder (reverse args) binders
+      let m1 = M.unions (map fst res)
+          binders' = map snd res
+      return (m1, TypedBinder val (ConstructorBinder ss ctor binders'))
     _ -> throwError . errorMessage' ss . UnknownName . fmap DctorName $ ctor
   where
   peelArgs :: Type a -> ([Type a], Type a)
@@ -648,37 +651,42 @@ inferBinder val (ConstructorBinder ss ctor binders) = do
     where
     go args (TypeApp _ (TypeApp _ fn arg) ret) | eqType fn tyFunction = go (arg : args) ret
     go args ret = (args, ret)
-inferBinder val (LiteralBinder _ (ObjectLiteral props)) = do
+inferBinder val (LiteralBinder ss (ObjectLiteral props)) = do
   row <- freshTypeWithKind (kindRow kindType)
   rest <- freshTypeWithKind (kindRow kindType)
-  m1 <- inferRowProperties row rest props
+  (m1, props') <- inferRowProperties row rest props
   unifyTypes val (srcTypeApp tyRecord row)
-  return m1
+  return (m1, TypedBinder val (LiteralBinder ss (ObjectLiteral props')))
   where
-  inferRowProperties :: SourceType -> SourceType -> [(PSString, Binder)] -> m (M.Map Ident (SourceSpan, SourceType))
-  inferRowProperties nrow row [] = unifyTypes nrow row >> return M.empty
+  inferRowProperties :: SourceType -> SourceType -> [(PSString, Binder)] -> m (M.Map Ident (SourceSpan, SourceType), [(PSString, Binder)])
+  inferRowProperties nrow row [] = unifyTypes nrow row >> return (M.empty, [])
   inferRowProperties nrow row ((name, binder):binders) = do
     propTy <- freshTypeWithKind kindType
-    m1 <- inferBinder propTy binder
-    m2 <- inferRowProperties nrow (srcRCons (Label name) propTy row) binders
-    return $ m1 `M.union` m2
-inferBinder val (LiteralBinder _ (ArrayLiteral binders)) = do
+    (m1, b') <- inferBinder propTy binder
+    (m2, bs') <- inferRowProperties nrow (srcRCons (Label name) propTy row) binders
+    return (m1 `M.union` m2, (name, b'):bs')
+inferBinder val (LiteralBinder ss (ArrayLiteral binders)) = do
   el <- freshTypeWithKind kindType
-  m1 <- M.unions <$> traverse (inferBinder el) binders
+  res <- traverse (inferBinder el) binders
+  let m1 = M.unions (map fst res)
+      binders' = map snd res
   unifyTypes val (srcTypeApp tyArray el)
-  return m1
+  return (m1, TypedBinder val (LiteralBinder ss (ArrayLiteral binders')))
 inferBinder val (NamedBinder ss name binder) =
   warnAndRethrowWithPositionTC ss $ do
-    m <- inferBinder val binder
-    return $ M.insert name (ss, val) m
-inferBinder val (PositionedBinder pos _ binder) =
-  warnAndRethrowWithPositionTC pos $ inferBinder val binder
+    (m, b') <- inferBinder val binder
+    return (M.insert name (ss, val) m, TypedBinder val (NamedBinder ss name b'))
+inferBinder val (PositionedBinder pos com binder) =
+  warnAndRethrowWithPositionTC pos $ do
+    (m, b') <- inferBinder val binder
+    return (m, TypedBinder val (PositionedBinder pos com b'))
 inferBinder val (TypedBinder ty binder) = do
   (elabTy, kind) <- kindOf ty
   checkTypeKind ty kind
   ty1 <- introduceSkolemScope <=< replaceAllTypeSynonyms <=< replaceTypeWildcards $ elabTy
   unifyTypes val ty1
-  inferBinder ty1 binder
+  (m, b') <- inferBinder ty1 binder
+  return (m, TypedBinder val (TypedBinder ty b'))
 inferBinder _ OpBinder{} =
   internalError "OpBinder should have been desugared before inferBinder"
 inferBinder _ BinaryNoParensBinder{} =
@@ -724,9 +732,11 @@ checkBinders _ _ [] = return []
 checkBinders nvals ret (CaseAlternative binders result : bs) = do
   guardWith (errorMessage $ OverlappingArgNames Nothing) $
     let ns = concatMap binderNames binders in length (ordNub ns) == length ns
-  m1 <- M.unions <$> zipWithM inferBinder nvals binders
+  res <- zipWithM inferBinder nvals binders
+  let m1 = M.unions (map fst res)
+      binders' = map snd res
   r <- bindLocalVariables [ (ss, name, ty, Defined) | (name, (ss, ty)) <- M.toList m1 ] $
-       CaseAlternative binders <$> forM result (\ge -> checkGuardedRhs ge ret)
+       CaseAlternative binders' <$> forM result (\ge -> checkGuardedRhs ge ret)
   rs <- checkBinders nvals ret bs
   return $ r : rs
 
@@ -744,12 +754,12 @@ checkGuardedRhs (GuardedExpr (ConditionGuard cond : guards) rhs) ret = do
   return $ GuardedExpr (ConditionGuard (tvToExpr cond') : guards') rhs'
 checkGuardedRhs (GuardedExpr (PatternGuard binder expr : guards) rhs) ret = do
   tv@(TypedValue' _ _ ty) <- infer expr
-  variables <- inferBinder ty binder
+  (variables, binder') <- inferBinder ty binder
   GuardedExpr guards' rhs' <- bindLocalVariables [ (ss, name, bty, Defined)
                                                  | (name, (ss, bty)) <- M.toList variables
                                                  ] $
     checkGuardedRhs (GuardedExpr guards rhs) ret
-  return $ GuardedExpr (PatternGuard binder (tvToExpr tv) : guards') rhs'
+  return $ GuardedExpr (PatternGuard binder' (tvToExpr tv) : guards') rhs'
 
 -- |
 -- Check the type of a value, rethrowing errors to provide a better error message
