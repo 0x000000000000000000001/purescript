@@ -11,7 +11,7 @@ at tests/purs/failing/RowLacks.purs:16:9 - 16:66 (line 16, column 9 - line 16, c
   [33m                 )            [0m
   [33m                              [0m
 
-while applying a function [33mlacksX[0m
+while applying a function [33m((lacksX))[0m
   of type [33mLacks @t1 "x" t2 => Proxy @(Row t1) t2 -> Proxy @(Row t3) (() @t3)[0m
   to argument [33mProxy[0m
 while checking that expression [33mlacksX Proxy[0m

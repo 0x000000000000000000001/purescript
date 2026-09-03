@@ -85,6 +85,11 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
   classDeclToCoreFn _ = []
 
   -- Desugars member declarations from AST to CoreFn representation.
+  getExprType :: A.Expr -> Maybe SourceType
+  getExprType (A.TypedValue _ _ ty) = Just ty
+  getExprType (A.PositionedValue _ _ e) = getExprType e
+  getExprType _ = Nothing
+
   declToCoreFn :: A.Declaration -> [Bind Ann]
   declToCoreFn (A.DataDeclaration (ss, com) Newtype _ _ [ctor]) =
     [NonRec (ss, [], Nothing, declMeta) (properToIdent $ A.dataCtorName ctor) $
@@ -102,9 +107,10 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
   declToCoreFn (A.DataBindingGroupDeclaration ds) =
     concatMap declToCoreFn ds
   declToCoreFn (A.ValueDecl (ss, com) name _ _ [A.MkUnguarded e]) =
-    [NonRec (ssA ss) name (exprToCoreFn ss com Nothing e)]
+    let ty = getExprType e
+    in [NonRec (ss, [], simplifyType env <$> ty, Nothing) name (exprToCoreFn ss com Nothing e)]
   declToCoreFn (A.BindingGroupDeclaration ds) =
-    [Rec . NEL.toList $ fmap (\(((ss, com), name), _, e) -> ((ssA ss, name), exprToCoreFn ss com Nothing e)) ds]
+    [Rec . NEL.toList $ fmap (\(((ss, com), name), _, e) -> (((ss, [], simplifyType env <$> getExprType e, Nothing), name), exprToCoreFn ss com Nothing e)) ds]
   declToCoreFn _ = []
 
   -- Desugars expressions from AST to CoreFn representation.
@@ -171,7 +177,7 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
 
   -- Desugars case alternatives from AST to CoreFn representation.
   altToCoreFn :: SourceSpan -> A.CaseAlternative -> CaseAlternative Ann
-  altToCoreFn ss (A.CaseAlternative bs vs) = CaseAlternative (map (binderToCoreFn ss []) bs) (go vs)
+  altToCoreFn ss (A.CaseAlternative bs vs) = CaseAlternative (map (binderToCoreFn ss [] Nothing) bs) (go vs)
     where
     go :: [A.GuardedExpr] -> Either [(Guard Ann, Expr Ann)] (Expr Ann)
     go [A.MkUnguarded e]
@@ -186,27 +192,27 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
     guardToExpr _ = internalError "Guard not correctly desugared"
 
   -- Desugars case binders from AST to CoreFn representation.
-  binderToCoreFn :: SourceSpan -> [Comment] -> A.Binder -> Binder Ann
-  binderToCoreFn _ com (A.LiteralBinder ss lit) =
-    LiteralBinder (ss, com, Nothing, Nothing) (fmap (binderToCoreFn ss com) lit)
-  binderToCoreFn ss com A.NullBinder =
-    NullBinder (ss, com, Nothing, Nothing)
-  binderToCoreFn _ com (A.VarBinder ss name) =
-    VarBinder (ss, com, Nothing, Nothing) name
-  binderToCoreFn _ com (A.ConstructorBinder ss dctor@(Qualified mn' _) bs) =
+  binderToCoreFn :: SourceSpan -> [Comment] -> Maybe SourceType -> A.Binder -> Binder Ann
+  binderToCoreFn _ com ty (A.LiteralBinder ss lit) =
+    LiteralBinder (ss, com, simplifyType env <$> ty, Nothing) (fmap (binderToCoreFn ss com Nothing) lit)
+  binderToCoreFn ss com ty A.NullBinder =
+    NullBinder (ss, com, simplifyType env <$> ty, Nothing)
+  binderToCoreFn _ com ty (A.VarBinder ss name) =
+    VarBinder (ss, com, simplifyType env <$> ty, Nothing) name
+  binderToCoreFn _ com ty (A.ConstructorBinder ss dctor@(Qualified mn' _) bs) =
     let (_, tctor, _, _) = lookupConstructor env dctor
-    in ConstructorBinder (ss, com, Nothing, Just $ getConstructorMeta dctor) (Qualified mn' tctor) dctor (fmap (binderToCoreFn ss []) bs)
-  binderToCoreFn _ com (A.NamedBinder ss name b) =
-    NamedBinder (ss, com, Nothing, Nothing) name (binderToCoreFn ss [] b)
-  binderToCoreFn _ com (A.PositionedBinder ss com1 b) =
-    binderToCoreFn ss (com ++ com1) b
-  binderToCoreFn ss com (A.TypedBinder _ b) =
-    binderToCoreFn ss com b
-  binderToCoreFn _ _ A.OpBinder{} =
+    in ConstructorBinder (ss, com, simplifyType env <$> ty, Just $ getConstructorMeta dctor) (Qualified mn' tctor) dctor (fmap (binderToCoreFn ss [] Nothing) bs)
+  binderToCoreFn _ com ty (A.NamedBinder ss name b) =
+    NamedBinder (ss, com, simplifyType env <$> ty, Nothing) name (binderToCoreFn ss [] Nothing b)
+  binderToCoreFn _ com ty (A.PositionedBinder ss com1 b) =
+    binderToCoreFn ss (com ++ com1) ty b
+  binderToCoreFn ss com _ (A.TypedBinder ty b) =
+    binderToCoreFn ss com (Just ty) b
+  binderToCoreFn _ _ _ A.OpBinder{} =
     internalError "OpBinder should have been desugared before binderToCoreFn"
-  binderToCoreFn _ _ A.BinaryNoParensBinder{} =
+  binderToCoreFn _ _ _ A.BinaryNoParensBinder{} =
     internalError "BinaryNoParensBinder should have been desugared before binderToCoreFn"
-  binderToCoreFn _ _ A.ParensInBinder{} =
+  binderToCoreFn _ _ _ A.ParensInBinder{} =
     internalError "ParensInBinder should have been desugared before binderToCoreFn"
 
   -- Gets metadata for let bindings.
