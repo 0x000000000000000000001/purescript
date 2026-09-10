@@ -9,15 +9,21 @@ import Data.Aeson.Types (parse)
 import Data.Map as M
 import Data.Version (Version(..))
 
+import Language.PureScript.AST qualified as A
 import Language.PureScript.AST.Literals (Literal(..))
-import Language.PureScript.AST.SourcePos (SourcePos(..), SourceSpan(..))
+import Language.PureScript.AST.SourcePos (pattern NullSourceAnn, SourcePos(..), SourceSpan(..))
 import Language.PureScript.Comments (Comment(..))
+import Language.PureScript.Constants.Prim qualified as C
 import Language.PureScript.CoreFn (Ann, Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Meta(..), Module(..), ssAnn, CoreFnType(..))
+import Language.PureScript.CoreFn.Desugar (moduleToCoreFn)
 import Language.PureScript.CoreFn.Module (DataDecl, ClassDecl)
 import Language.PureScript.CoreFn.FromJSON (moduleFromJSON)
 import Language.PureScript.CoreFn.ToJSON (moduleToJSON)
+import Language.PureScript.Environment (initEnvironment)
+import Language.PureScript.Label (Label(..))
 import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..))
 import Language.PureScript.PSString (mkString)
+import Language.PureScript.Types qualified as T
 
 import Test.Hspec (Spec, context, shouldBe, shouldSatisfy, specify)
 
@@ -41,6 +47,61 @@ spec = context "CoreFnFromJson" $ do
       mp = "src/Example/Main.purs"
       ss = SourceSpan mp (SourcePos 0 0) (SourcePos 0 0)
       ann = ssAnn ss
+
+  context "typed row desugaring" $ do
+    let a = NullSourceAnn
+        int = T.TypeConstructor a C.Int
+        kind = T.TypeConstructor a C.Type
+        emptyRow = T.REmpty a
+        kindedEmpty = T.KindApp a emptyRow kind
+        field label ty = T.RCons a (Label label) ty
+        record = T.TypeApp a (T.TypeConstructor a C.Record)
+        desugar ty =
+          [ annotationType
+          | ((_, _, annotationType, _), _) <- moduleForeign $ moduleToCoreFn initEnvironment $
+              A.Module ss [] mn [A.ExternDeclaration (ss, []) (Ident "value") ty] (Just [])
+          ]
+
+    specify "preserves closed kind-applied rows and field order" $ do
+      let row = field "z" int $ field "a" int kindedEmpty
+          expected = CFRow [("z", CFInt), ("a", CFInt)] Nothing
+      desugar row `shouldBe` [Just expected]
+      desugar (record row) `shouldBe` [Just (CFRecord expected)]
+      desugar (record kindedEmpty) `shouldBe` [Just (CFRecord (CFRow [] Nothing))]
+
+    specify "preserves unkinded closed rows" $ do
+      desugar (field "x" int emptyRow) `shouldBe` [Just (CFRow [("x", CFInt)] Nothing)]
+      desugar (record emptyRow) `shouldBe` [Just (CFRecord (CFRow [] Nothing))]
+
+    specify "retains named and skolem open tails" $ do
+      let expected = CFRow [("x", CFInt)] (Just (CFTypeVar "r"))
+          named = field "x" int (T.TypeVar a "r")
+          skolem = field "x" int (T.Skolem a "r" Nothing 0 (T.SkolemScope 0))
+      desugar named `shouldBe` [Just expected]
+      desugar (record named) `shouldBe` [Just (CFRecord expected)]
+      desugar skolem `shouldBe` [Just expected]
+      desugar (record skolem) `shouldBe` [Just (CFRecord expected)]
+
+    specify "keeps polymorphic fields in closed records" $ do
+      let ty = T.ForAll a T.TypeVarInvisible "a" Nothing
+            (record $ field "x" (T.TypeVar a "a") kindedEmpty) Nothing
+      desugar ty `shouldBe`
+        [Just (CFForAll ["a"] (CFRecord (CFRow [("x", CFTypeVar "a")] Nothing)))]
+
+    specify "distinguishes nested closed and open records" $ do
+      let closed = record $ field "value" int kindedEmpty
+          open = record $ field "value" int (T.TypeVar a "r")
+          outer = record $ field "closed" closed $ field "open" open kindedEmpty
+      desugar outer `shouldBe` [Just (CFRecord (CFRow
+        [ ("closed", CFRecord (CFRow [("value", CFInt)] Nothing))
+        , ("open", CFRecord (CFRow [("value", CFInt)] (Just (CFTypeVar "r"))))
+        ] Nothing))]
+
+    specify "does not classify an unknown tail as closed" $ do
+      let row = field "x" int (T.TUnknown a 0)
+          expected = CFRow [("x", CFInt)] (Just CFAny)
+      desugar row `shouldBe` [Just expected]
+      desugar (record row) `shouldBe` [Just (CFRecord expected)]
 
   specify "should parse version" $ do
     let v = Version [0, 13, 6] []

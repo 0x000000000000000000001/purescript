@@ -363,7 +363,7 @@ simplifyType' visited visitedClasses env (TypeApp _ (TypeConstructor _ (Qualifie
         rowToFields (RCons _ (Label l) ty rest) = do
           (fields, tailTy) <- rowToFields rest
           return ((l, simplifyType' visited visitedClasses env ty) : fields, tailTy)
-        rowToFields (REmpty _) = Just ([], Nothing)
+        rowToFields (REmptyKinded _ _) = Just ([], Nothing)
         rowToFields (TypeVar _ tv) = Just ([], Just (CFTypeVar tv))
         rowToFields (Skolem _ tv _ _ _) = Just ([], Just (CFTypeVar tv))
         rowToFields _ = Just ([], Just CFAny)
@@ -397,7 +397,7 @@ simplifyType' visited visitedClasses env row@(RCons _ _ _ _) =
     rowToFields (RCons _ (Label l) ty rest) = do
       (fields, tailTy) <- rowToFields rest
       return ((l, simplifyType' visited visitedClasses env ty) : fields, tailTy)
-    rowToFields (REmpty _) = Just ([], Nothing)
+    rowToFields (REmptyKinded _ _) = Just ([], Nothing)
     rowToFields (TypeVar _ tv) = Just ([], Just (CFTypeVar tv))
     rowToFields (Skolem _ tv _ _ _) = Just ([], Just (CFTypeVar tv))
     rowToFields _ = Just ([], Just CFAny)
