@@ -75,12 +75,13 @@ spec = context "CoreFnFromJson" $ do
 
     specify "retains named and skolem open tails" $ do
       let expected = CFRow [("x", CFInt)] (Just (CFTypeVar "r"))
+          expectedSkolem = CFRow [("x", CFInt)] (Just (CFTypeVar "r$scope0"))
           named = field "x" int (T.TypeVar a "r")
           skolem = field "x" int (T.Skolem a "r" Nothing 0 (T.SkolemScope 0))
       desugar named `shouldBe` [Just expected]
       desugar (record named) `shouldBe` [Just (CFRecord expected)]
-      desugar skolem `shouldBe` [Just expected]
-      desugar (record skolem) `shouldBe` [Just (CFRecord expected)]
+      desugar skolem `shouldBe` [Just expectedSkolem]
+      desugar (record skolem) `shouldBe` [Just (CFRecord expectedSkolem)]
 
     specify "keeps polymorphic fields in closed records" $ do
       let ty = T.ForAll a T.TypeVarInvisible "a" Nothing
@@ -102,6 +103,43 @@ spec = context "CoreFnFromJson" $ do
           expected = CFRow [("x", CFInt)] (Just CFAny)
       desugar row `shouldBe` [Just expected]
       desugar (record row) `shouldBe` [Just (CFRecord expected)]
+
+  context "scoped type identities" $ do
+    let a = NullSourceAnn
+        variable = T.TypeVar a
+        skolem name scope = T.Skolem a name Nothing scope (T.SkolemScope scope)
+        forallAt name scope body = T.ForAll a T.TypeVarInvisible name Nothing body scope
+        function x y = T.TypeApp a (T.TypeApp a (T.TypeConstructor a C.Function) x) y
+        desugar ty =
+          [ annotationType
+          | ((_, _, annotationType, _), _) <- moduleForeign $ moduleToCoreFn initEnvironment $
+              A.Module ss [] mn [A.ExternDeclaration (ss, []) (Ident "value") ty] (Just [])
+          ]
+
+    specify "links a scoped forall to skolems in separate annotations" $ do
+      let scope = Just (T.SkolemScope 1)
+          scoped = CFTypeVar "a$scope1"
+      desugar (forallAt "a" scope $ function (variable "a") (variable "a"))
+        `shouldBe` [Just (CFForAll ["a$scope1"] (CFFunc [scoped] scoped))]
+      desugar (function (skolem "a" 1) (skolem "a" 1))
+        `shouldBe` [Just (CFFunc [scoped] scoped)]
+
+    specify "distinguishes an existential from an outer variable with the same name" $ do
+      let outer = CFTypeVar "a$scope1"
+          inner = CFTypeVar "a$scope2"
+          callback = forallAt "a" (Just (T.SkolemScope 2)) $
+            function (variable "a") (skolem "a" 1)
+          ty = forallAt "a" (Just (T.SkolemScope 1)) $
+            function callback (variable "a")
+      desugar ty `shouldBe`
+        [Just (CFForAll ["a$scope1"] (CFFunc [CFForAll ["a$scope2"] (CFFunc [inner] outer)] outer))]
+      desugar (function (skolem "a" 2) (skolem "a" 1))
+        `shouldBe` [Just (CFFunc [inner] outer)]
+
+    specify "keeps unscoped quantifiers lexical and does not capture free skolems" $ do
+      let ty = forallAt "a" Nothing $ function (variable "a") (skolem "a" 1)
+      desugar ty `shouldBe`
+        [Just (CFForAll ["a"] (CFFunc [CFTypeVar "a"] (CFTypeVar "a$scope1")))]
 
   specify "should parse version" $ do
     let v = Version [0, 13, 6] []

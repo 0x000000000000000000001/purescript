@@ -30,7 +30,7 @@ import Language.PureScript.Environment (DataDeclType(..), TypeKind(..), Environm
 import Language.PureScript.Label (Label(..))
 import Language.PureScript.Names (pattern ByNullSourcePos, Ident(..), ModuleName, ProperName(..), ProperNameType(..), Qualified(..), QualifiedBy(..), getQual)
 import Language.PureScript.PSString (PSString)
-import Language.PureScript.Types (pattern REmptyKinded, SourceType, Type(..), replaceAllTypeVars, constraintClass, constraintArgs, Constraint(..))
+import Language.PureScript.Types (pattern REmptyKinded, SourceType, Type(..), SkolemScope(..), everywhereOnTypes, replaceAllTypeVars, constraintClass, constraintArgs, Constraint(..))
 import Language.PureScript.AST qualified as A
 import Language.PureScript.Constants.Prim qualified as C
 
@@ -306,7 +306,22 @@ properToIdent = Ident . runProperName
 
 -- | Simplifies a SourceType into a CoreFnType
 simplifyType :: Environment -> SourceType -> CoreFnType
-simplifyType = simplifyType' S.empty S.empty
+simplifyType env = simplifyType' S.empty S.empty env . scopeTypeVariables
+
+-- The scope links a quantified variable to its skolems in separately annotated
+-- expressions. Names alone cannot distinguish an existential from an outer
+-- variable with the same spelling.
+scopeTypeVariables :: SourceType -> SourceType
+scopeTypeVariables = everywhereOnTypes $ \case
+  ForAll ann vis name kind body (Just scope) ->
+    let scopedName = skolemTypeName name scope
+    in ForAll ann vis scopedName kind
+         (replaceAllTypeVars [(name, TypeVar ann scopedName)] body) (Just scope)
+  Skolem ann name _ _ scope -> TypeVar ann (skolemTypeName name scope)
+  ty -> ty
+
+skolemTypeName :: T.Text -> SkolemScope -> T.Text
+skolemTypeName name (SkolemScope scope) = name <> "$scope" <> T.pack (show scope)
 
 stripDictTypeName :: ProperName a -> ProperName a
 stripDictTypeName (ProperName n) = ProperName (fromMaybe n (T.stripSuffix "$Dict" n))
