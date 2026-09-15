@@ -468,7 +468,7 @@ infer' (VisibleTypeApp valFn wc@(TypeWildcard _ _)) = do
   (valFn'', valTy') <- instantiatePolyTypeWithUnknownsUntilVisible valFn' valTy
   case valTy' of
     ForAll qAnn _ qName qKind qBody qSko -> do
-      pure $ TypedValue' True (VisibleTypeApp valFn'' wc) (ForAll qAnn TypeVarInvisible qName qKind qBody qSko)
+      pure $ TypedValue' False (VisibleTypeApp valFn'' wc) (ForAll qAnn TypeVarInvisible qName qKind qBody qSko)
     _ ->
       throwError $ errorMessage $ CannotSkipTypeApplication valTy'
 infer' (VisibleTypeApp valFn tyArg) = do
@@ -480,7 +480,7 @@ infer' (VisibleTypeApp valFn tyArg) = do
       tyArg'' <- replaceAllTypeSynonyms <=< checkKind tyArg' $ qKind
       let resTy = replaceTypeVars qName tyArg'' qBody
       (valFn''', resTy') <- instantiateConstraint valFn'' resTy
-      pure $ TypedValue' True (VisibleTypeApp valFn''' tyArg'') resTy'
+      pure $ TypedValue' False (VisibleTypeApp valFn''' tyArg'') resTy'
     _ ->
       throwError $ errorMessage $ CannotApplyExpressionOfTypeOnType valTy tyArg
 infer' (Var ss var) = do
