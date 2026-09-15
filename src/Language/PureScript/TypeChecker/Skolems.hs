@@ -99,13 +99,15 @@ skolemEscapeCheck expr@TypedValue{} =
        -> Expr
        -> ((Set SkolemScope, Maybe SourceSpan), [ErrorMessage])
     go (scopes, _) (PositionedValue ss _ _) = ((scopes, Just ss), [])
-    go (scopes, ssUsed) val@(TypedValue _ _ ty) =
+    go (scopes, ssUsed) val@(TypedValue check _ ty) =
         ( (allScopes, ssUsed)
-        , [ ErrorMessage (maybe id ((:) . positionedError) ssUsed [ ErrorInExpression val ]) $
-              EscapedSkolem name (nonEmptySpan ssBound) ty
-          | (ssBound, name, scope) <- collectSkolems ty
-          , notMember scope allScopes
-          ]
+        , if check then
+            [ ErrorMessage (maybe id ((:) . positionedError) ssUsed [ ErrorInExpression val ]) $
+                EscapedSkolem name (nonEmptySpan ssBound) ty
+            | (ssBound, name, scope) <- collectSkolems ty
+            , notMember scope allScopes
+            ]
+          else []
         )
       where
         -- Any new skolem scopes introduced by universal quantifiers
