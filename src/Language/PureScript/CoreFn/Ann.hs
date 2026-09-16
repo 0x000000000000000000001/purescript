@@ -36,10 +36,49 @@ data CoreFnType
 
 instance NFData CoreFnType
 
--- |
--- Type alias for basic annotations
---
-type Ann = (SourceSpan, [Comment], Maybe CoreFnType, Maybe Meta, Maybe (Int, Bool))
+-- | Identity of one lexical binding, unique within the exported module.
+-- Copies introduced by a later transformation need fresh identities.
+newtype BindingId = BindingId Int
+  deriving (Show, Eq, Ord, Generic)
+
+instance NFData BindingId
+
+-- | Facts about each dynamic instance of a lexical binding. Unknown facts are
+-- represented by Nothing; neither absence nor zero implies object uniqueness.
+data BindingUsage = BindingUsage
+  { bindingUsageId :: BindingId
+  , bindingMaxUses :: Maybe Integer
+  , bindingEscapingContext :: Maybe Bool
+  } deriving (Show, Eq, Ord, Generic)
+
+instance NFData BindingUsage
+
+-- | A proof that this occurrence has no subsequent direct use on any relevant
+-- path, or an unknown result. This does not exclude aliases to the same object.
+data LastLocalUse = ProvenLastLocalUse | UnknownLastLocalUse
+  deriving (Show, Eq, Ord, Generic)
+
+instance NFData LastLocalUse
+
+data VariableUse = VariableUse
+  { variableBindingId :: BindingId
+  , variableLastLocalUse :: LastLocalUse
+  } deriving (Show, Eq, Ord, Generic)
+
+instance NFData VariableUse
+
+data UsageInfo = UsageInfo
+  { bindingUsage :: Maybe BindingUsage
+  , variableUse :: Maybe VariableUse
+  } deriving (Show, Eq, Ord, Generic)
+
+instance NFData UsageInfo
+
+emptyUsageInfo :: UsageInfo
+emptyUsageInfo = UsageInfo Nothing Nothing
+
+-- | Type alias for basic annotations.
+type Ann = (SourceSpan, [Comment], Maybe CoreFnType, Maybe Meta, Maybe UsageInfo)
 
 -- |
 -- An annotation empty of metadata aside from a source span.

@@ -40,6 +40,7 @@ extra-source-files:
   CONTRIBUTORS.md
   CONTRIBUTING.md
   VERSIONING_POLICY.md
+  CORE_FN_USAGE.md
   .hspec
 
 source-repository head
@@ -236,6 +237,7 @@ library
     Language.PureScript.CoreFn
     Language.PureScript.CoreFn.Ann
     Language.PureScript.CoreFn.Usage
+    Language.PureScript.CoreFn.Usage.Analysis
     Language.PureScript.CoreFn.Binders
     Language.PureScript.CoreFn.CSE
     Language.PureScript.CoreFn.Desugar

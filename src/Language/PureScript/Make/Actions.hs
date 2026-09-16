@@ -253,6 +253,8 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
     codegenTargets <- lift $ asks optionsCodegenTargets
     when (S.member CoreFn codegenTargets) $ do
       let coreFnFile = targetFilename mn CoreFn
+          -- Usage facts describe this exported CoreFn. Later transformations
+          -- must preserve them explicitly or invalidate/recompute them.
           mUsage = Usage.computeUsage m
           json = CFJ.moduleToJSON Paths.version mUsage
       lift $ writeJSONFile coreFnFile json

@@ -25,6 +25,7 @@ import Control.Monad.State
 import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.AST.SourcePos (SourceSpan(..))
 import Language.PureScript.CoreFn (Ann, Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Meta(..), Module(..), CoreFnType(..), DataDecl(..), DataConstructor(..), ClassDecl(..))
+import Language.PureScript.CoreFn.Ann (BindingId(..), BindingUsage(..), LastLocalUse(..), VariableUse(..), UsageInfo(..))
 import Language.PureScript.Names (Ident, ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..), runIdent)
 import Language.PureScript.PSString (PSString, decodeStringWithReplacement)
 
@@ -136,19 +137,32 @@ annToJSON (ss, _, mty, m, mUsage) = do
   typeVal <- case mty of
     Nothing -> pure Null
     Just ty -> toJSON <$> internType ty
-  let (uc, esc) = case mUsage of
-        Just (c, e) -> (Just c, Just e)
-        Nothing -> (Nothing, Nothing)
   pure $ object $
     [ "sourceSpan"  .= sourceSpanToJSON ss
     , "type"        .= typeVal
     , "meta"        .= maybe Null metaToJSON m
-    ] ++ case uc of
-           Nothing -> []
-           Just n  -> [ "usageCount" .= n ]
-      ++ case esc of
-           Nothing -> []
-           Just e  -> [ "escapes" .= toJSON e ]
+    ] ++ maybe [] usageInfoToJSON mUsage
+
+usageInfoToJSON :: UsageInfo -> [Pair]
+usageInfoToJSON info =
+  maybe [] bindingFields (bindingUsage info)
+    ++ maybe [] variableFields (variableUse info)
+  where
+  bindingFields (BindingUsage (BindingId ident) maxUses escapingContext) =
+    [ "bindingUsage" .= object
+        [ "bindingId" .= ident
+        , "maxUses" .= maxUses
+        , "hasEscapingUseContext" .= escapingContext
+        ]
+    ]
+  variableFields (VariableUse (BindingId ident) lastUse) =
+    [ "variableUse" .= object
+        [ "bindingId" .= ident
+        , "lastLocalUse" .= case lastUse of
+            ProvenLastLocalUse -> Bool True
+            UnknownLastLocalUse -> Null
+        ]
+    ]
 
 literalToJSON :: (a -> TypeTableState Value) -> Literal a -> TypeTableState Value
 literalToJSON _ (NumericLiteral (Left n))
