@@ -235,6 +235,7 @@ library
     Language.PureScript.Constants.Libs
     Language.PureScript.CoreFn
     Language.PureScript.CoreFn.Ann
+    Language.PureScript.CoreFn.Usage
     Language.PureScript.CoreFn.Binders
     Language.PureScript.CoreFn.CSE
     Language.PureScript.CoreFn.Desugar

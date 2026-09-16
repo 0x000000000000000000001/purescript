@@ -156,7 +156,12 @@ annFromJSON modulePath = withObject "Ann" annFromObj
              Nothing -> return Nothing
              Just v -> coreFnTypeFromJSON v
     mm <- o .: "meta" >>= metaFromJSON
-    return (ss, [], mty, mm)
+    uc <- o .:? "usageCount"
+    esc <- o .:? "escapes"
+    let mUsage = case (uc, esc) of
+          (Just c, Just e) -> Just (c, e)
+          _ -> Nothing
+    return (ss, [], mty, mm, mUsage)
 
 sourceSpanFromJSON :: FilePath -> Value -> Parser SourceSpan
 sourceSpanFromJSON modulePath = withObject "SourceSpan" $ \o ->

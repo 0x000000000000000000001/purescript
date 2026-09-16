@@ -175,7 +175,7 @@ makeLenses ''CSEEnvironment
 type CSEAnn = (Maybe CoreFnType, Maybe Meta)
 
 toCSEAnn :: Ann -> CSEAnn
-toCSEAnn (_, _, ty, meta) = (ty, meta)
+toCSEAnn (_, _, ty, meta, _) = (ty, meta)
 
 -- |
 -- Map from the shape of an expression to an identifier created to represent
@@ -271,7 +271,7 @@ generateIdentFor d e = at d . non mempty . at e %%<~ \case
     _ -> "ref"
 
 nullAnn :: Ann
-nullAnn = (nullSourceSpan, [], Nothing, Nothing)
+nullAnn = (nullSourceSpan, [], Nothing, Nothing, Nothing)
 
 -- |
 -- Use a map to substitute local Vars in a list of Binds.
@@ -395,7 +395,7 @@ optimizeCommonSubexpressions mn
   -- common subexpression elimination pass.
   shouldFloatExpr :: Expr Ann -> Bool
   shouldFloatExpr = \case
-    App (_, _, _, Just IsSyntheticApp) e _ -> isSimple e
+    App (_, _, _, Just IsSyntheticApp, _) e _ -> isSimple e
     _                                   -> False
 
   isSimple :: Expr Ann -> Bool

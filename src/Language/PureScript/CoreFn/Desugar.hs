@@ -95,8 +95,8 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
       qname = Qualified (ByModuleName mn) cname
       ty = (\(_, _, t, _) -> t) <$> M.lookup qname (dataConstructors env)
       declMeta = isDictTypeName cname `orEmpty` IsTypeClassConstructor
-    in [NonRec (ss, [], simplifyType env <$> ty, declMeta) (properToIdent cname) $
-      Abs (ss, com, simplifyType env <$> ty, Just IsNewtype) (Ident "x") (Var (ss, [], Nothing, Nothing) $ Qualified ByNullSourcePos (Ident "x"))]
+    in [NonRec (ss, [], simplifyType env <$> ty, declMeta, Nothing) (properToIdent cname) $
+      Abs (ss, com, simplifyType env <$> ty, Just IsNewtype, Nothing) (Ident "x") (Var (ss, [], Nothing, Nothing, Nothing) $ Qualified ByNullSourcePos (Ident "x"))]
   declToCoreFn d@(A.DataDeclaration _ Newtype _ _ _) =
     error $ "Found newtype with multiple constructors: " ++ show d
   declToCoreFn (A.DataDeclaration (ss, com) Data tyName _ ctors) =
@@ -104,24 +104,24 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
       let
         ctor = A.dataCtorName ctorDecl
         (_, _, ctorTy, fields) = lookupConstructor env (Qualified (ByModuleName mn) ctor)
-      in NonRec (ss, [], Just (simplifyType env ctorTy), Nothing) (properToIdent ctor) $ Constructor (ss, com, Just (simplifyType env ctorTy), Nothing) tyName ctor fields
+      in NonRec (ss, [], Just (simplifyType env ctorTy), Nothing, Nothing) (properToIdent ctor) $ Constructor (ss, com, Just (simplifyType env ctorTy), Nothing, Nothing) tyName ctor fields
   declToCoreFn (A.DataBindingGroupDeclaration ds) =
     concatMap declToCoreFn ds
   declToCoreFn (A.ValueDecl (ss, com) name _ _ [A.MkUnguarded e]) =
     let ty = getExprType e <|> ((\(t,_,_) -> t) <$> M.lookup (Qualified (ByModuleName mn) name) (names env))
-    in [NonRec (ss, [], simplifyType env <$> ty, Nothing) name (exprToCoreFn ss com Nothing e)]
+    in [NonRec (ss, [], simplifyType env <$> ty, Nothing, Nothing) name (exprToCoreFn ss com Nothing e)]
   declToCoreFn (A.BindingGroupDeclaration ds) =
-    [Rec . NEL.toList $ fmap (\(((ss, com), name), _, e) -> (((ss, [], simplifyType env <$> (getExprType e <|> ((\(t,_,_) -> t) <$> M.lookup (Qualified (ByModuleName mn) name) (names env))), Nothing), name), exprToCoreFn ss com Nothing e)) ds]
+    [Rec . NEL.toList $ fmap (\(((ss, com), name), _, e) -> (((ss, [], simplifyType env <$> (getExprType e <|> ((\(t,_,_) -> t) <$> M.lookup (Qualified (ByModuleName mn) name) (names env))), Nothing, Nothing), name), exprToCoreFn ss com Nothing e)) ds]
   declToCoreFn _ = []
 
   -- Desugars expressions from AST to CoreFn representation.
   exprToCoreFn :: SourceSpan -> [Comment] -> Maybe SourceType -> A.Expr -> Expr Ann
   exprToCoreFn _ com ty (A.Literal ss lit) =
-    Literal (ss, com, simplifyType env <$> ty, Nothing) (fmap (exprToCoreFn ss com Nothing) lit)
+    Literal (ss, com, simplifyType env <$> ty, Nothing, Nothing) (fmap (exprToCoreFn ss com Nothing) lit)
   exprToCoreFn ss com ty (A.Accessor name v) =
-    Accessor (ss, com, simplifyType env <$> ty, Nothing) name (exprToCoreFn ss [] Nothing v)
+    Accessor (ss, com, simplifyType env <$> ty, Nothing, Nothing) name (exprToCoreFn ss [] Nothing v)
   exprToCoreFn ss com ty (A.ObjectUpdate obj vs) =
-    ObjectUpdate (ss, com, simplifyType env <$> ty, Nothing) (exprToCoreFn ss [] Nothing obj) (ty >>= unchangedRecordFields (fmap fst vs)) $ fmap (second (exprToCoreFn ss [] Nothing)) vs
+    ObjectUpdate (ss, com, simplifyType env <$> ty, Nothing, Nothing) (exprToCoreFn ss [] Nothing obj) (ty >>= unchangedRecordFields (fmap fst vs)) $ fmap (second (exprToCoreFn ss [] Nothing)) vs
     where
     -- Return the unchanged labels of a closed record, or Nothing for other types or open records.
     unchangedRecordFields :: [PSString] -> Type a -> Maybe [PSString]
@@ -134,11 +134,11 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
         collect _ = Nothing
     unchangedRecordFields _ _ = Nothing
   exprToCoreFn ss com ty (A.Abs (A.VarBinder _ name) v) =
-    Abs (ss, com, simplifyType env <$> ty, Nothing) name (exprToCoreFn ss [] Nothing v)
+    Abs (ss, com, simplifyType env <$> ty, Nothing, Nothing) name (exprToCoreFn ss [] Nothing v)
   exprToCoreFn _ _ _ (A.Abs _ _) =
     internalError "Abs with Binder argument was not desugared before exprToCoreFn mn"
   exprToCoreFn ss com ty (A.App v1 v2) =
-    App (ss, com, simplifyType env <$> ty, (isDictCtor v1 || isSynthetic v2) `orEmpty` IsSyntheticApp) v1' v2'
+    App (ss, com, simplifyType env <$> ty, (isDictCtor v1 || isSynthetic v2) `orEmpty` IsSyntheticApp, Nothing) v1' v2'
     where
     v1' = exprToCoreFn ss [] Nothing v1
     v2' = exprToCoreFn ss [] Nothing v2
@@ -152,28 +152,28 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
       A.Unused{}             -> True
       _                      -> False
   exprToCoreFn ss com _ (A.Unused _) =
-    Var (ss, com, Nothing, Nothing) C.I_undefined
+    Var (ss, com, Nothing, Nothing, Nothing) C.I_undefined
   exprToCoreFn _ com ty (A.Var ss ident) =
-    Var (ss, com, simplifyType env <$> ty, getValueMeta ident) ident
+    Var (ss, com, simplifyType env <$> ty, getValueMeta ident, Nothing) ident
   exprToCoreFn ss com ty (A.IfThenElse v1 v2 v3) =
     let boolTy = Just (simplifyType env tyBoolean)
-    in Case (ss, com, simplifyType env <$> ty, Nothing) [exprToCoreFn ss [] Nothing v1]
-      [ CaseAlternative [LiteralBinder (ss, [], boolTy, Nothing) $ BooleanLiteral True]
+    in Case (ss, com, simplifyType env <$> ty, Nothing, Nothing) [exprToCoreFn ss [] Nothing v1]
+      [ CaseAlternative [LiteralBinder (ss, [], boolTy, Nothing, Nothing) $ BooleanLiteral True]
                         (Right $ exprToCoreFn ss [] Nothing v2)
-      , CaseAlternative [NullBinder (ss, [], boolTy, Nothing)]
+      , CaseAlternative [NullBinder (ss, [], boolTy, Nothing, Nothing)]
                         (Right $ exprToCoreFn ss [] Nothing v3) ]
   exprToCoreFn _ com ty (A.Constructor ss name) =
-    Var (ss, com, simplifyType env <$> ty, Just $ getConstructorMeta name) $ fmap properToIdent name
+    Var (ss, com, simplifyType env <$> ty, Just $ getConstructorMeta name, Nothing) $ fmap properToIdent name
   exprToCoreFn ss com ty (A.Case vs alts) =
-    Case (ss, com, simplifyType env <$> ty, Nothing) (fmap (exprToCoreFn ss [] Nothing) vs) (fmap (altToCoreFn ss) alts)
+    Case (ss, com, simplifyType env <$> ty, Nothing, Nothing) (fmap (exprToCoreFn ss [] Nothing) vs) (fmap (altToCoreFn ss) alts)
   exprToCoreFn ss com _ (A.TypedValue _ v ty) =
     exprToCoreFn ss com (Just ty) v
   exprToCoreFn ss com ty (A.Let w ds v) =
-    Let (ss, com, simplifyType env <$> ty, getLetMeta w) (concatMap declToCoreFn ds) (exprToCoreFn ss [] Nothing v)
+    Let (ss, com, simplifyType env <$> ty, getLetMeta w, Nothing) (concatMap declToCoreFn ds) (exprToCoreFn ss [] Nothing v)
   exprToCoreFn _ com ty (A.PositionedValue ss com1 v) =
     exprToCoreFn ss (com ++ com1) ty v
   exprToCoreFn ss com ty (A.VisibleTypeApp v t) =
-    E.TypeApp (ss, com, simplifyType env <$> ty, Nothing) (exprToCoreFn ss [] Nothing v) (simplifyType env t)
+    E.TypeApp (ss, com, simplifyType env <$> ty, Nothing, Nothing) (exprToCoreFn ss [] Nothing v) (simplifyType env t)
   exprToCoreFn _ _ _ e =
     error $ "Unexpected value in exprToCoreFn mn: " ++ show e
 
@@ -196,16 +196,16 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
   -- Desugars case binders from AST to CoreFn representation.
   binderToCoreFn :: SourceSpan -> [Comment] -> Maybe SourceType -> A.Binder -> Binder Ann
   binderToCoreFn _ com ty (A.LiteralBinder ss lit) =
-    LiteralBinder (ss, com, simplifyType env <$> ty, Nothing) (fmap (binderToCoreFn ss com Nothing) lit)
+    LiteralBinder (ss, com, simplifyType env <$> ty, Nothing, Nothing) (fmap (binderToCoreFn ss com Nothing) lit)
   binderToCoreFn ss com ty A.NullBinder =
-    NullBinder (ss, com, simplifyType env <$> ty, Nothing)
+    NullBinder (ss, com, simplifyType env <$> ty, Nothing, Nothing)
   binderToCoreFn _ com ty (A.VarBinder ss name) =
-    VarBinder (ss, com, simplifyType env <$> ty, Nothing) name
+    VarBinder (ss, com, simplifyType env <$> ty, Nothing, Nothing) name
   binderToCoreFn _ com ty (A.ConstructorBinder ss dctor@(Qualified mn' _) bs) =
     let (_, tctor, _, _) = lookupConstructor env dctor
-    in ConstructorBinder (ss, com, simplifyType env <$> ty, Just $ getConstructorMeta dctor) (Qualified mn' tctor) dctor (fmap (binderToCoreFn ss [] Nothing) bs)
+    in ConstructorBinder (ss, com, simplifyType env <$> ty, Just $ getConstructorMeta dctor, Nothing) (Qualified mn' tctor) dctor (fmap (binderToCoreFn ss [] Nothing) bs)
   binderToCoreFn _ com ty (A.NamedBinder ss name b) =
-    NamedBinder (ss, com, simplifyType env <$> ty, Nothing) name (binderToCoreFn ss [] Nothing b)
+    NamedBinder (ss, com, simplifyType env <$> ty, Nothing, Nothing) name (binderToCoreFn ss [] Nothing b)
   binderToCoreFn _ com ty (A.PositionedBinder ss com1 b) =
     binderToCoreFn ss (com ++ com1) ty b
   binderToCoreFn ss com _ (A.TypedBinder ty b) =
@@ -278,12 +278,12 @@ findQualModules decls =
 
 -- | Desugars import declarations from AST to CoreFn representation.
 importToCoreFn :: A.Declaration -> Maybe (Ann, ModuleName)
-importToCoreFn (A.ImportDeclaration (ss, com) name _ _) = Just ((ss, com, Nothing, Nothing), name)
+importToCoreFn (A.ImportDeclaration (ss, com) name _ _) = Just ((ss, com, Nothing, Nothing, Nothing), name)
 importToCoreFn _ = Nothing
 
 -- | Desugars foreign declarations from AST to CoreFn representation.
 externToCoreFn :: Environment -> A.Declaration -> Maybe (Ann, Ident)
-externToCoreFn env (A.ExternDeclaration (ss, com) name ty) = Just ((ss, com, Just (simplifyType env ty), Just IsForeign), name)
+externToCoreFn env (A.ExternDeclaration (ss, com) name ty) = Just ((ss, com, Just (simplifyType env ty), Just IsForeign, Nothing), name)
 externToCoreFn _ _ = Nothing
 
 -- | Desugars export declarations references from AST to CoreFn representation.

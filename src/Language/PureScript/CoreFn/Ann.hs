@@ -39,16 +39,16 @@ instance NFData CoreFnType
 -- |
 -- Type alias for basic annotations
 --
-type Ann = (SourceSpan, [Comment], Maybe CoreFnType, Maybe Meta)
+type Ann = (SourceSpan, [Comment], Maybe CoreFnType, Maybe Meta, Maybe (Int, Bool))
 
 -- |
 -- An annotation empty of metadata aside from a source span.
 --
 ssAnn :: SourceSpan -> Ann
-ssAnn ss = (ss, [], Nothing, Nothing)
+ssAnn ss = (ss, [], Nothing, Nothing, Nothing)
 
 -- |
 -- Remove the comments from an annotation
 --
 removeComments :: Ann -> Ann
-removeComments (ss, _, ty, meta) = (ss, [], ty, meta)
+removeComments (ss, _, ty, meta, uc) = (ss, [], ty, meta, uc)

@@ -58,7 +58,7 @@ spec = context "CoreFnFromJson" $ do
         record = T.TypeApp a (T.TypeConstructor a C.Record)
         desugar ty =
           [ annotationType
-          | ((_, _, annotationType, _), _) <- moduleForeign $ moduleToCoreFn initEnvironment $
+          | ((_, _, annotationType, _, _), _) <- moduleForeign $ moduleToCoreFn initEnvironment $
               A.Module ss [] mn [A.ExternDeclaration (ss, []) (Ident "value") ty] (Just [])
           ]
 
@@ -112,7 +112,7 @@ spec = context "CoreFnFromJson" $ do
         function x y = T.TypeApp a (T.TypeApp a (T.TypeConstructor a C.Function) x) y
         desugar ty =
           [ annotationType
-          | ((_, _, annotationType, _), _) <- moduleForeign $ moduleToCoreFn initEnvironment $
+          | ((_, _, annotationType, _, _), _) <- moduleForeign $ moduleToCoreFn initEnvironment $
               A.Module ss [] mn [A.ExternDeclaration (ss, []) (Ident "value") ty] (Just [])
           ]
 
@@ -293,28 +293,28 @@ spec = context "CoreFnFromJson" $ do
   context "Meta" $ do
     specify "should parse IsConstructor" $ do
       let m = Module ss [] mn mp [] [] M.empty []
-                [ NonRec (ss, [], Nothing, Just (IsConstructor ProductType [Ident "x"])) (Ident "x") $
-                  Literal (ss, [], Nothing, Just (IsConstructor SumType [])) (CharLiteral 'a')
+                [ NonRec (ss, [], Nothing, Just (IsConstructor ProductType [Ident "x"]), Nothing) (Ident "x") $
+                  Literal (ss, [], Nothing, Just (IsConstructor SumType []), Nothing) (CharLiteral 'a')
                 ]
       parseMod m `shouldSatisfy` isSuccess
 
     specify "should parse IsNewtype" $ do
       let m = Module ss [] mn mp [] [] M.empty []
-                [ NonRec (ss, [], Nothing, Just IsNewtype) (Ident "x") $
+                [ NonRec (ss, [], Nothing, Just IsNewtype, Nothing) (Ident "x") $
                   Literal ann (CharLiteral 'a')
                 ]
       parseMod m `shouldSatisfy` isSuccess
 
     specify "should parse IsTypeClassConstructor" $ do
       let m = Module ss [] mn mp [] [] M.empty []
-                [ NonRec (ss, [], Nothing, Just IsTypeClassConstructor) (Ident "x") $
+                [ NonRec (ss, [], Nothing, Just IsTypeClassConstructor, Nothing) (Ident "x") $
                   Literal ann (CharLiteral 'a')
                 ]
       parseMod m `shouldSatisfy` isSuccess
 
     specify "should parse IsForeign" $ do
       let m = Module ss [] mn mp [] [] M.empty []
-                [ NonRec (ss, [], Nothing, Just IsForeign) (Ident "x") $
+                [ NonRec (ss, [], Nothing, Just IsForeign, Nothing) (Ident "x") $
                   Literal ann (CharLiteral 'a')
                 ]
       parseMod m `shouldSatisfy` isSuccess
@@ -369,7 +369,7 @@ spec = context "CoreFnFromJson" $ do
 
   context "CoreFnType" $ do
     specify "should parse CFInt" $ do
-      let annWithType = (ss, [], Just CFInt, Nothing)
+      let annWithType = (ss, [], Just CFInt, Nothing, Nothing)
           m = Module ss [] mn mp [] [] M.empty []
                 [ NonRec annWithType (Ident "x") $
                   Literal annWithType (NumericLiteral (Left 1))
@@ -378,7 +378,7 @@ spec = context "CoreFnFromJson" $ do
 
     specify "should parse CFRecord and CFRow" $ do
       let recordTy = CFRecord (CFRow [(mkString "foo", CFString)] Nothing)
-          annWithType = (ss, [], Just recordTy, Nothing)
+          annWithType = (ss, [], Just recordTy, Nothing, Nothing)
           m = Module ss [] mn mp [] [] M.empty []
                 [ NonRec annWithType (Ident "x") $
                   Literal annWithType (NumericLiteral (Left 1))
@@ -387,7 +387,7 @@ spec = context "CoreFnFromJson" $ do
 
     specify "should parse CFFunc" $ do
       let funcTy = CFFunc [CFInt, CFString] CFBoolean
-          annWithType = (ss, [], Just funcTy, Nothing)
+          annWithType = (ss, [], Just funcTy, Nothing, Nothing)
           m = Module ss [] mn mp [] [] M.empty []
                 [ NonRec annWithType (Ident "x") $
                   Literal annWithType (NumericLiteral (Left 1))
@@ -396,7 +396,7 @@ spec = context "CoreFnFromJson" $ do
 
     specify "should parse CFAdt" $ do
       let adtTy = CFAdt (Qualified ByNullSourcePos (ProperName "Maybe")) [CFInt]
-          annWithType = (ss, [], Just adtTy, Nothing)
+          annWithType = (ss, [], Just adtTy, Nothing, Nothing)
           m = Module ss [] mn mp [] [] M.empty []
                 [ NonRec annWithType (Ident "x") $
                   Literal annWithType (NumericLiteral (Left 1))

@@ -132,14 +132,23 @@ coreFnTypeToJSON (CFConstrainedType constraints body) = do
   pure $ object [ "type" .= toJSON "ConstrainedType", "constraints" .= constraints', "body" .= bId ]
 
 annToJSON :: Ann -> TypeTableState Value
-annToJSON (ss, _, mty, m) = do
+annToJSON (ss, _, mty, m, mUsage) = do
   typeVal <- case mty of
     Nothing -> pure Null
     Just ty -> toJSON <$> internType ty
-  pure $ object [ "sourceSpan"  .= sourceSpanToJSON ss
-                , "type"        .= typeVal
-                , "meta"        .= maybe Null metaToJSON m
-                ]
+  let (uc, esc) = case mUsage of
+        Just (c, e) -> (Just c, Just e)
+        Nothing -> (Nothing, Nothing)
+  pure $ object $
+    [ "sourceSpan"  .= sourceSpanToJSON ss
+    , "type"        .= typeVal
+    , "meta"        .= maybe Null metaToJSON m
+    ] ++ case uc of
+           Nothing -> []
+           Just n  -> [ "usageCount" .= n ]
+      ++ case esc of
+           Nothing -> []
+           Just e  -> [ "escapes" .= toJSON e ]
 
 literalToJSON :: (a -> TypeTableState Value) -> Literal a -> TypeTableState Value
 literalToJSON _ (NumericLiteral (Left n))
