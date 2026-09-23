@@ -329,7 +329,12 @@ stripDictTypeName (ProperName n) = ProperName (fromMaybe n (T.stripSuffix "$Dict
 disqual :: Qualified a -> a
 disqual (Qualified _ a) = a
 
-simplifyType' :: S.Set (Qualified (ProperName 'TypeName)) -> S.Set (Qualified (ProperName 'ClassName)) -> Environment -> SourceType -> CoreFnType
+-- The recursion guard records the applied instantiation, not just the name:
+-- a nested occurrence of the same newtype with different arguments is still
+-- erased, while a genuinely self-referential newtype terminates.
+type SimplifiedNewtypeKey = (Qualified (ProperName 'TypeName), [SourceType])
+
+simplifyType' :: S.Set SimplifiedNewtypeKey -> S.Set (Qualified (ProperName 'ClassName)) -> Environment -> SourceType -> CoreFnType
 simplifyType' visited visitedClasses env (ForAll _ _ ident _ ty _) = 
   let (vars, body) = collectForAlls [ident] ty
   in CFForAll vars (simplifyType' visited visitedClasses env body)
@@ -358,9 +363,10 @@ simplifyType' visited visitedClasses env (TypeConstructor _ qname@(Qualified _ (
       else case M.lookup qname (types env) of
         Just (_, DataType Data _ _) -> CFAdt qname []
         Just (_, ExternData _) -> CFAdt qname []
-        Just (_, DataType Newtype _ [(_, [underlyingType])]) -> 
-            if S.member qname visited then CFAdt qname []
-            else simplifyType' (S.insert qname visited) visitedClasses env underlyingType
+        Just (_, DataType Newtype _ [(_, [underlyingType])]) ->
+            let key = (qname, [])
+            in if S.member key visited then CFAdt qname []
+               else simplifyType' (S.insert key visited) visitedClasses env underlyingType
         _ -> CFAny
 simplifyType' visited visitedClasses env (TypeApp _ (TypeConstructor _ (Qualified _ (ProperName name))) inner)
   | name == "Array" = CFArray (simplifyType' visited visitedClasses env inner)
@@ -394,11 +400,12 @@ simplifyType' visited visitedClasses env tApp@(TypeApp _ _ _) =
           else case M.lookup qname (types env) of
             Just (_, DataType Data _ _) -> CFAdt qname (map (simplifyType' visited visitedClasses env) args)
             Just (_, ExternData _) -> CFAdt qname (map (simplifyType' visited visitedClasses env) args)
-            Just (_, DataType Newtype typeVars [(_, [underlyingType])]) -> 
-                if S.member qname visited then CFAdt qname (map (simplifyType' visited visitedClasses env) args)
-                else let subst = zip (map (\(v, _, _) -> v) typeVars) args
-                         underlyingTypeSubst = replaceAllTypeVars subst underlyingType
-                     in simplifyType' (S.insert qname visited) visitedClasses env underlyingTypeSubst
+            Just (_, DataType Newtype typeVars [(_, [underlyingType])]) ->
+                let key = (qname, args)
+                in if S.member key visited then CFAdt qname (map (simplifyType' visited visitedClasses env) args)
+                   else let subst = zip (map (\(v, _, _) -> v) typeVars) args
+                            underlyingTypeSubst = replaceAllTypeVars subst underlyingType
+                        in simplifyType' (S.insert key visited) visitedClasses env underlyingTypeSubst
             _ -> CFTypeApp (simplifyType' visited visitedClasses env base) (map (simplifyType' visited visitedClasses env) args)
         _ -> CFTypeApp (simplifyType' visited visitedClasses env base) (map (simplifyType' visited visitedClasses env) args)
   where
