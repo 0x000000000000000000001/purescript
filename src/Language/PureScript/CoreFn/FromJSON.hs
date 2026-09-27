@@ -28,7 +28,7 @@ import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.CoreFn.Ann (Ann, ssAnn, BindingId(..), BindingUsage(..), LastLocalUse(..), VariableUse(..), UsageInfo(..), emptyUsageInfo)
 import Language.PureScript.CoreFn (Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Guard, Meta(..), Module(..), CoreFnType(..))
 import Language.PureScript.Names (Ident(..), ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..), unusedIdent, runIdent, pattern ByNullSourcePos)
-import Language.PureScript.PSString (PSString, mkString)
+import Language.PureScript.PSString (PSString)
 
 import Text.ParserCombinators.ReadP (readP_to_S)
 
@@ -96,7 +96,7 @@ coreFnTypeFromJSON table = go S.empty
       "Any" -> return $ Just CFAny
       "TypeLevelString" -> do
         val <- o .: "value"
-        return $ Just (CFTypeLevelString (Language.PureScript.PSString.mkString val))
+        return $ Just (CFTypeLevelString val)
       "Array" -> do
         inner <- o .: "element" >>= go seen
         return $ CFArray <$> inner
@@ -148,7 +148,7 @@ coreFnTypeFromJSON table = go S.empty
       parseField = withObject "Field" $ \obj -> do
         l <- obj .: "label"
         t <- obj .: "type" >>= \v -> go seen v >>= \case Just a -> return a; Nothing -> fail "Expected CoreFnType"
-        return (Language.PureScript.PSString.mkString l, t)
+        return (l, t)
 
       parseConstraint = withObject "Constraint" $ \obj -> do
         fqn <- obj .: "fqn"

@@ -27,7 +27,7 @@ import Language.PureScript.AST.SourcePos (SourceSpan(..))
 import Language.PureScript.CoreFn (Ann, Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Meta(..), Module(..), CoreFnType(..), DataDecl(..), DataConstructor(..), ClassDecl(..))
 import Language.PureScript.CoreFn.Ann (BindingId(..), BindingUsage(..), LastLocalUse(..), VariableUse(..), UsageInfo(..))
 import Language.PureScript.Names (Ident, ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..), runIdent)
-import Language.PureScript.PSString (PSString, decodeStringWithReplacement)
+import Language.PureScript.PSString (PSString)
 
 
 type TypeTableState = State (M.Map CoreFnType Int, Int, [(Int, Value)])
@@ -87,7 +87,7 @@ coreFnTypeToJSON CFBoolean = pure $ object [ "type" .= toJSON "Boolean" ]
 coreFnTypeToJSON CFChar = pure $ object [ "type" .= toJSON "Char" ]
 coreFnTypeToJSON CFUnit = pure $ object [ "type" .= toJSON "Unit" ]
 coreFnTypeToJSON CFAny = pure $ object [ "type" .= toJSON "Any" ]
-coreFnTypeToJSON (CFTypeLevelString s) = pure $ object [ "type" .= toJSON "TypeLevelString", "value" .= Language.PureScript.PSString.decodeStringWithReplacement s ]
+coreFnTypeToJSON (CFTypeLevelString s) = pure $ object [ "type" .= toJSON "TypeLevelString", "value" .= s ]
 coreFnTypeToJSON (CFArray ty) = do
   idTy <- internType ty
   pure $ object [ "type" .= toJSON "Array", "element" .= idTy ]
@@ -109,7 +109,9 @@ coreFnTypeToJSON (CFFunc args ret) = do
 coreFnTypeToJSON (CFRow fields tailTy) = do
   fields' <- mapM (\(k, v) -> do
       vId <- internType v
-      pure $ object [ "label" .= Language.PureScript.PSString.decodeStringWithReplacement k, "type" .= vId ]
+      -- A label with lone surrogates keeps the lossless PSString encoding (an
+      -- array of UTF-16 code units); JSON strings cannot carry them.
+      pure $ object [ "label" .= k, "type" .= vId ]
     ) fields
   tailId <- case tailTy of
     Nothing -> pure Data.Aeson.Null
@@ -336,7 +338,7 @@ recordToJSON :: (a -> TypeTableState Value) -> [(PSString, a)] -> TypeTableState
 recordToJSON f xs = do
   xs' <- mapM (\(k, v) -> do
     v' <- f v
-    pure (toJSON (Language.PureScript.PSString.decodeStringWithReplacement k), v')) xs
+    pure (toJSON k, v')) xs
   -- The original code did: toJSON . map (toJSON *** f)
   -- Data.Aeson's ToJSON for (a,b) emits an array [a,b] if it's not text keys, but for String keys it might emit an object? 
   -- No, recordToJSON emitted an array of tuples in the original.
