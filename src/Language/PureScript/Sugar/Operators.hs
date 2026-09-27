@@ -50,8 +50,18 @@ desugarSignedLiterals (Module ss coms mn ds exts) =
   Module ss coms mn (map f' ds) exts
   where
   (f', _, _) = everywhereOnValues id go id
+  -- An out-of-range positive literal whose negation fits (only -2147483648 for
+  -- a 32-bit Int) is folded here. Backends with native 64-bit integers would
+  -- otherwise parse 2147483648 and negate it without wrapping.
+  go (UnaryMinus ss' (PositionedValue _ _ (Literal _ (NumericLiteral (Left n)))))
+    | outOfRangeNegation n = Literal ss' (NumericLiteral (Left (negate n)))
+  go (UnaryMinus ss' (Parens (PositionedValue _ _ (Literal _ (NumericLiteral (Left n))))))
+    | outOfRangeNegation n = Literal ss' (NumericLiteral (Left (negate n)))
+  go (UnaryMinus ss' (Literal _ (NumericLiteral (Left n))))
+    | outOfRangeNegation n = Literal ss' (NumericLiteral (Left (negate n)))
   go (UnaryMinus ss' val) = App (Var ss' (Qualified ByNullSourcePos (Ident C.S_negate))) val
   go other = other
+  outOfRangeNegation n = n > 2147483647 && n <= 2147483648
 
 -- |
 -- An operator associated with its declaration position, fixity, and the name
