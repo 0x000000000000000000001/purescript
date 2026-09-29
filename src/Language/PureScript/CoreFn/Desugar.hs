@@ -80,6 +80,8 @@ moduleToCoreFn env (A.Module modSS coms mn decls (Just exps)) =
         superclasses' = fmap (\c -> (constraintClass c, fmap (simplifyType env) (constraintArgs c))) superclasses
         methods' = mapMaybe (fmap (\td -> let (ident, ty) = A.unwrapTypeDeclaration td in (ident, simplifyType env ty)) . A.getTypeDeclaration) members
     in [ClassDecl className typeVars' superclasses' methods']
+  classDeclToCoreFn (A.DataBindingGroupDeclaration ds) =
+    concatMap classDeclToCoreFn ds
   classDeclToCoreFn _ = []
 
   -- Desugars member declarations from AST to CoreFn representation.
