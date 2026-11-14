@@ -41,6 +41,8 @@ extra-source-files:
   CONTRIBUTORS.md
   CONTRIBUTING.md
   VERSIONING_POLICY.md
+  CORE_FN_TYPES.md
+  CORE_FN_USAGE.md
   .hspec
 
 source-repository head
@@ -247,6 +249,8 @@ library
     Language.PureScript.CoreFn.Optimizer
     Language.PureScript.CoreFn.ToJSON
     Language.PureScript.CoreFn.Traversals
+    Language.PureScript.CoreFn.Usage
+    Language.PureScript.CoreFn.Usage.Analysis
     Language.PureScript.CoreImp
     Language.PureScript.CoreImp.AST
     Language.PureScript.CoreImp.Module

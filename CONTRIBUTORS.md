@@ -14,6 +14,7 @@ If you would prefer to use different terms, please use the section below instead
 
 | Username | Name | License |
 | :------- | :--- | :------ |
+| [@0x000000000000000000001](https://github.com/0x000000000000000000001) | Kevin Francart | [MIT license] |
 | [@5outh](https://github.com/5outh) | Benjamin Kovach | [MIT license] |
 | [@actionshrimp](https://github.com/actionshrimp) | David Aitken | [MIT license] |
 | [@ad-si](https://github.com/ad-si) | Adrian Sieber | [MIT license] |

@@ -20,10 +20,11 @@ import Control.Monad.Supply.Class (MonadSupply)
 
 import Language.PureScript.AST
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.Environment (NameKind(..))
+import Language.PureScript.Environment (NameKind(..), tyBoolean)
 import Language.PureScript.Errors (ErrorMessage(..), MultipleErrors(..), SimpleErrorMessage(..), addHint, errorMessage', parU, rethrow, withPosition)
 import Language.PureScript.Names (pattern ByNullSourcePos, Ident, Qualified(..), freshIdent')
 import Language.PureScript.TypeChecker.Monad (guardWith)
+import Language.PureScript.Types (SourceType)
 
 -- |
 -- Replace all top-level binders in a module with case expressions.
@@ -48,6 +49,14 @@ desugarCaseGuards declarations = parU declarations go
       let (f, _, _) = everywhereOnValuesM return (desugarGuardedExprs (declSourceSpan d)) return
       in f d
 
+getExprType :: Expr -> Maybe SourceType
+getExprType (TypedValue _ _ ty) = Just ty
+getExprType (PositionedValue _ _ e) = getExprType e
+getExprType _ = Nothing
+
+nullBinderFor :: Expr -> Binder
+nullBinderFor = maybe NullBinder (\ty -> TypedBinder ty NullBinder) . getExprType
+
 -- |
 -- Desugar case with pattern guards and pattern clauses to a
 -- series of nested case expressions.
@@ -64,7 +73,11 @@ desugarGuardedExprs ss (Case scrut alternatives)
     -- We bind the scrutinee to Vars here to mitigate this case.
     (scrut', scrut_decls) <- unzip <$> forM scrut (\e -> do
       scrut_id <- freshIdent'
-      pure ( Var ss (Qualified ByNullSourcePos scrut_id)
+      let v = Var ss (Qualified ByNullSourcePos scrut_id)
+          v' = case getExprType e of
+                 Just t -> TypedValue True v t
+                 Nothing -> v
+      pure ( v'
            , ValueDecl (ss, []) scrut_id Private [] [MkUnguarded e]
            )
       )
@@ -76,6 +89,7 @@ desugarGuardedExprs ss (Case scrut alternatives)
     isTrivialExpr (Parens e) = isTrivialExpr e
     isTrivialExpr (PositionedValue _ _ e) = isTrivialExpr e
     isTrivialExpr (TypedValue _ e _) = isTrivialExpr e
+    isTrivialExpr (VisibleTypeApp e _) = isTrivialExpr e
     isTrivialExpr _ = False
 
 desugarGuardedExprs ss (Case scrut alternatives) =
@@ -171,8 +185,8 @@ desugarGuardedExprs ss (Case scrut alternatives) =
           -- if the binder is a var binder we must not add
           -- the fail case as it results in unreachable
           -- alternative
-          alt_fail' n | all isIrrefutable vb = []
-                      | otherwise = alt_fail n
+          alt_fail' exprs | all isIrrefutable vb = []
+                          | otherwise = alt_fail exprs
 
 
           -- we are here:
@@ -186,18 +200,18 @@ desugarGuardedExprs ss (Case scrut alternatives) =
           --
         in Case scrut
             (CaseAlternative vb [MkUnguarded (desugarGuard gs e alt_fail)]
-              : alt_fail' (length scrut))
+              : alt_fail' scrut)
 
       return [ CaseAlternative scrut_nullbinder [MkUnguarded rhs]]
 
-    desugarGuard :: [Guard] -> Expr -> (Int ->[CaseAlternative]) -> Expr
+    desugarGuard :: [Guard] -> Expr -> ([Expr] -> [CaseAlternative]) -> Expr
     desugarGuard [] e _ = e
     desugarGuard (ConditionGuard c : gs) e match_failed
       | isTrueExpr c = desugarGuard gs e match_failed
       | otherwise =
         Case [c]
-          (CaseAlternative [LiteralBinder ss (BooleanLiteral True)]
-            [MkUnguarded (desugarGuard gs e match_failed)] : match_failed 1)
+          (CaseAlternative [TypedBinder tyBoolean (LiteralBinder ss (BooleanLiteral True))]
+            [MkUnguarded (desugarGuard gs e match_failed)] : match_failed [c])
 
     desugarGuard (PatternGuard vb g : gs) e match_failed =
       Case [g]
@@ -206,7 +220,7 @@ desugarGuardedExprs ss (Case scrut alternatives) =
       where
         -- don't consider match_failed case if the binder is irrefutable
         match_failed' | isIrrefutable vb = []
-                      | otherwise        = match_failed 1
+                      | otherwise        = match_failed [g]
 
     -- we generate a let-binding for the remaining guards
     -- and alternatives. A CaseAlternative is passed (or in
@@ -215,7 +229,7 @@ desugarGuardedExprs ss (Case scrut alternatives) =
     desugarAltOutOfLine :: [Binder]
                         -> [GuardedExpr]
                         -> [CaseAlternative]
-                        -> ((Int -> [CaseAlternative]) -> Expr)
+                        -> (([Expr] -> [CaseAlternative]) -> Expr)
                         -> m Expr
     desugarAltOutOfLine alt_binder rem_guarded rem_alts mk_body
       | Just rem_case <- mkCaseOfRemainingGuardsAndAlts = do
@@ -228,8 +242,8 @@ desugarGuardedExprs ss (Case scrut alternatives) =
           goto_rem_case :: Expr
           goto_rem_case = Var ss (Qualified ByNullSourcePos rem_case_id)
             `App` Literal ss (BooleanLiteral True)
-          alt_fail :: Int -> [CaseAlternative]
-          alt_fail n = [CaseAlternative (replicate n NullBinder) [MkUnguarded goto_rem_case]]
+          alt_fail :: [Expr] -> [CaseAlternative]
+          alt_fail exprs = [CaseAlternative (map nullBinderFor exprs) [MkUnguarded goto_rem_case]]
 
         pure $ Let FromLet [
           ValueDecl (ss, []) rem_case_id Private []
@@ -248,7 +262,7 @@ desugarGuardedExprs ss (Case scrut alternatives) =
           = Nothing
 
     scrut_nullbinder :: [Binder]
-    scrut_nullbinder = replicate (length scrut) NullBinder
+    scrut_nullbinder = map nullBinderFor scrut
 
     -- case expressions with a single alternative which have
     -- a NullBinder occur frequently after desugaring

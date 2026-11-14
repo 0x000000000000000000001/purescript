@@ -40,6 +40,7 @@ import Language.PureScript.CodeGen.JS qualified as J
 import Language.PureScript.CodeGen.JS.Printer (prettyPrintJS, prettyPrintJSWithSourceMaps)
 import Language.PureScript.CoreFn qualified as CF
 import Language.PureScript.CoreFn.ToJSON qualified as CFJ
+import Language.PureScript.CoreFn.Usage qualified as Usage
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.CST qualified as CST
 import Language.PureScript.Docs.Prim qualified as Docs.Prim
@@ -252,7 +253,10 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
     codegenTargets <- lift $ asks optionsCodegenTargets
     when (S.member CoreFn codegenTargets) $ do
       let coreFnFile = targetFilename mn CoreFn
-          json = CFJ.moduleToJSON Paths.version m
+          -- Usage facts describe this exported CoreFn. Later transformations
+          -- must preserve them explicitly or invalidate/recompute them.
+          mUsage = Usage.computeUsage m
+          json = CFJ.moduleToJSON Paths.version mUsage
       lift $ writeJSONFile coreFnFile json
     when (S.member JS codegenTargets) $ do
       foreignInclude <- case mn `M.lookup` foreigns of
@@ -369,7 +373,7 @@ checkForeignDecls m path = do
                       errorInvalidForeignIdentifiers
                       (pure . S.fromList)
                       (parseIdents foreignIdentsStrs)
-    let importedIdents = S.fromList (CF.moduleForeign m)
+    let importedIdents = S.fromList (map snd $ CF.moduleForeign m)
 
     let unusedFFI = foreignIdents S.\\ importedIdents
     unless (null unusedFFI) $

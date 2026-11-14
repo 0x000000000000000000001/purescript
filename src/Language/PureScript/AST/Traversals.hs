@@ -706,16 +706,20 @@ accumTypes f = everythingOnValues mappend forDecls forValues forBinders (const m
 -- Map a function over type annotations appearing inside a value
 --
 overTypes :: (SourceType -> SourceType) -> Expr -> Expr
-overTypes f = let (_, f', _) = everywhereOnValues id g id in f'
+overTypes f = let (_, f', _) = everywhereOnValues id g h in f'
   where
   g :: Expr -> Expr
   g (TypedValue checkTy val t) = TypedValue checkTy val (f t)
+  g (VisibleTypeApp val t) = VisibleTypeApp val (f t)
   g (TypeClassDictionary c sco hints) =
     TypeClassDictionary
       (mapConstraintArgs (fmap f) c)
       (updateCtx sco)
       hints
   g other = other
+  h :: Binder -> Binder
+  h (TypedBinder t b) = TypedBinder (f t) b
+  h other = other
   updateDict fn dict = dict { tcdInstanceTypes = fn (tcdInstanceTypes dict) }
   updateScope = fmap . fmap . fmap . fmap $ updateDict $ fmap f
   updateCtx = M.alter updateScope ByNullSourcePos

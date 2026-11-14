@@ -102,9 +102,9 @@ lookupIdent name = do
 -- externs files as well.
 --
 renameInModule :: Module Ann -> (M.Map Ident Ident, Module Ann)
-renameInModule m@(Module _ _ _ _ _ exports _ foreigns decls) = (rsBoundNames, m { moduleExports, moduleDecls })
+renameInModule m@(Module _ _ _ _ _ exports _ foreigns decls _ _) = (rsBoundNames, m { moduleExports, moduleDecls })
   where
-  ((moduleDecls, moduleExports), RenameState{..}) = runRename foreigns $
+  ((moduleDecls, moduleExports), RenameState{..}) = runRename (map snd foreigns) $
     (,) <$> renameInDecls decls <*> traverse lookupIdent exports
 
 -- |
@@ -171,6 +171,8 @@ renameInValue (ObjectUpdate ann obj copy vs) =
   (\obj' -> ObjectUpdate ann obj' copy) <$> renameInValue obj <*> traverse (\(name, v) -> (name, ) <$> renameInValue v) vs
 renameInValue (Abs ann name v) =
   newScope $ Abs ann <$> updateScope name <*> renameInValue v
+renameInValue (TypeApp ann v ty) =
+  TypeApp ann <$> renameInValue v <*> pure ty
 renameInValue (App ann v1 v2) =
   App ann <$> renameInValue v1 <*> renameInValue v2
 renameInValue (Var ann (Qualified qb name)) | isBySourcePos qb || not (isPlainIdent name) =

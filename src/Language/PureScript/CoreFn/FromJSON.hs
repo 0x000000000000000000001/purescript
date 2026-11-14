@@ -10,23 +10,33 @@ module Language.PureScript.CoreFn.FromJSON
 import Prelude
 
 import Control.Applicative ((<|>))
+import Control.Monad (foldM, unless, when)
+import Control.Monad.State.Strict (StateT, evalStateT, get, modify, lift)
 
-import Data.Aeson (FromJSON(..), Object, Value(..), withObject, withText, (.:))
+import Data.Aeson (FromJSON(..), Object, Value(..), withObject, withText, (.:), (.:?), (.!=))
 import Data.Aeson.Types (Parser, listParser)
+import Data.Foldable (traverse_)
 import Data.Map.Strict qualified as M
+import Data.Set qualified as S
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
 import Data.Version (Version, parseVersion)
 
-import Language.PureScript.AST.SourcePos (SourceSpan(..))
 import Language.PureScript.AST.Literals (Literal(..))
-import Language.PureScript.CoreFn.Ann (Ann)
-import Language.PureScript.CoreFn (Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Guard, Meta(..), Module(..))
-import Language.PureScript.Names (Ident(..), ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..), unusedIdent)
+import Language.PureScript.AST.SourcePos (SourceSpan(..))
+import Language.PureScript.CoreFn (Bind(..), Binder(..), CaseAlternative(..), ConstructorType(..), Expr(..), Guard, Meta(..), Module(..), CoreFnType(..), DataDecl(..), DataConstructor(..), ClassDecl(..))
+import Language.PureScript.CoreFn.Ann (Ann, ssAnn, BindingId(..), BindingUsage(..), LastLocalUse(..), VariableUse(..), UsageInfo(..), emptyUsageInfo)
+import Language.PureScript.Names (Ident(..), ModuleName(..), ProperName(..), Qualified(..), QualifiedBy(..), unusedIdent, runIdent, pattern ByNullSourcePos)
 import Language.PureScript.PSString (PSString)
 
 import Text.ParserCombinators.ReadP (readP_to_S)
+
+-- | Source path and shared type table used by every annotation reader.
+data JSONContext = JSONContext
+  { contextPath :: FilePath
+  , contextTypes :: V.Vector Value
+  }
 
 parseVersion' :: String -> Maybe Version
 parseVersion' str =
@@ -64,13 +74,131 @@ metaFromJSON v = withObject "Meta" metaFromObj v
       is <- o .: "identifiers" >>= listParser identFromJSON
       return $ Just (IsConstructor ct is)
 
-annFromJSON :: FilePath -> Value -> Parser Ann
-annFromJSON modulePath = withObject "Ann" annFromObj
+coreFnTypeFromJSON :: V.Vector Value -> Value -> Parser (Maybe CoreFnType)
+coreFnTypeFromJSON table = go S.empty
+  where
+  go seen value@(Number _) = do
+    index <- parseJSON value
+    when (S.member index seen) $ fail "cyclic CoreFn type-table reference"
+    case table V.!? index of
+      Nothing -> fail "invalid CoreFn type-table reference"
+      Just entry -> go (S.insert index seen) entry
+  go _ Null = return Nothing
+  go seen (Object o) = do
+    typ :: Text <- o .: "type"
+    case typ of
+      "Int" -> return $ Just CFInt
+      "Number" -> return $ Just CFNumber
+      "String" -> return $ Just CFString
+      "Boolean" -> return $ Just CFBoolean
+      "Char" -> return $ Just CFChar
+      "Unit" -> return $ Just CFUnit
+      "Any" -> return $ Just CFAny
+      "TypeLevelString" -> do
+        val <- o .: "value"
+        return $ Just (CFTypeLevelString val)
+      "Array" -> do
+        inner <- o .: "element" >>= requiredType seen
+        return $ Just (CFArray inner)
+      "TypeVar" -> do
+        name <- o .: "name"
+        return $ Just (CFTypeVar name)
+      "Adt" -> do
+        qname <- o .: "fqn" >>= qualifiedProperNameFromJSON
+        args <- o .: "args" >>= listParser (requiredType seen)
+        return $ Just (CFAdt qname args)
+      "TypeApp" -> do
+        constructor <- o .: "constructor" >>= requiredType seen
+        args <- o .: "args" >>= listParser (requiredType seen)
+        return $ Just (CFTypeApp constructor args)
+      "Func" -> do
+        args <- o .: "args" >>= listParser (requiredType seen)
+        ret <- o .: "ret" >>= requiredType seen
+        return $ Just (CFFunc args ret)
+      "Row" -> do
+        fieldsVal <- o .: "fields"
+        fields <- mapM parseField fieldsVal
+        tailTy <- o .:? "tail" >>= traverse (requiredType seen)
+        return $ Just (CFRow fields tailTy)
+      "Record" -> do
+        row <- o .: "row" >>= requiredType seen
+        return $ Just (CFRecord row)
+      "ForAll" -> do
+        vars <- o .: "vars"
+        body <- o .: "body" >>= requiredType seen
+        return $ Just (CFForAll vars body)
+      "ConstrainedType" -> do
+        constraintsVal <- o .: "constraints"
+        constraints <- mapM parseConstraint constraintsVal
+        body <- o .: "body" >>= requiredType seen
+        return $ Just (CFConstrainedType constraints body)
+      _ -> fail ("not recognized CoreFn type: " ++ T.unpack typ)
+    where
+      parseField = withObject "Field" $ \obj -> do
+        l <- obj .: "label"
+        t <- obj .: "type" >>= requiredType seen
+        return (l, t)
+
+      parseConstraint = withObject "Constraint" $ \obj -> do
+        qname <- obj .: "fqn" >>= qualifiedProperNameFromJSON
+        args <- obj .: "args" >>= listParser (requiredType seen)
+        return (qname, args)
+  go _ _ = fail "expected a CoreFn type object or type-table reference"
+
+  requiredType seen value = go seen value >>= maybe (fail "expected CoreFn type") pure
+
+-- | Type and class names use a path of module segments followed by the name.
+qualifiedProperNameFromJSON :: Value -> Parser (Qualified (ProperName a))
+qualifiedProperNameFromJSON value = do
+  parts <- listParser parseJSON value
+  case reverse parts of
+    [] -> fail "a qualified type or class name must not be empty"
+    name : [] -> pure $ Qualified ByNullSourcePos (ProperName name)
+    name : moduleParts -> pure $
+      Qualified (ByModuleName (ModuleName (T.intercalate "." (reverse moduleParts)))) (ProperName name)
+
+requiredCoreFnTypeFromJSON :: JSONContext -> Value -> Parser CoreFnType
+requiredCoreFnTypeFromJSON context value =
+  coreFnTypeFromJSON (contextTypes context) value >>= maybe (fail "expected CoreFn type") pure
+
+annFromJSON :: JSONContext -> Value -> Parser Ann
+annFromJSON context = withObject "Ann" annFromObj
   where
   annFromObj o = do
-    ss <- o .: "sourceSpan" >>= sourceSpanFromJSON modulePath
+    ss <- o .: "sourceSpan" >>= sourceSpanFromJSON (contextPath context)
+    mtyVal <- o .:? "type"
+    mty <- case mtyVal of
+             Nothing -> return Nothing
+             Just v -> coreFnTypeFromJSON (contextTypes context) v
     mm <- o .: "meta" >>= metaFromJSON
-    return (ss, [], mm)
+    binding <- o .:? "bindingUsage" >>= traverse bindingUsageFromJSON
+    variable <- o .:? "variableUse" >>= traverse variableUseFromJSON
+    let info = UsageInfo binding variable
+        mUsage = if info == emptyUsageInfo then Nothing else Just info
+    return (ss, [], mty, mm, mUsage)
+
+bindingIdFromJSON :: Value -> Parser BindingId
+bindingIdFromJSON value = do
+  ident <- parseJSON value
+  when (ident < 0) $ fail "bindingId must be nonnegative"
+  pure (BindingId ident)
+
+bindingUsageFromJSON :: Value -> Parser BindingUsage
+bindingUsageFromJSON = withObject "BindingUsage" $ \o -> do
+  ident <- o .: "bindingId" >>= bindingIdFromJSON
+  maxUses <- o .:? "maxUses"
+  when (maybe False (< 0) maxUses) $ fail "maxUses must be nonnegative or null"
+  escapingContext <- o .:? "hasEscapingUseContext"
+  pure (BindingUsage ident maxUses escapingContext)
+
+variableUseFromJSON :: Value -> Parser VariableUse
+variableUseFromJSON = withObject "VariableUse" $ \o -> do
+  ident <- o .: "bindingId" >>= bindingIdFromJSON
+  lastUse <- o .:? "lastLocalUse" >>= \case
+    Nothing -> pure UnknownLastLocalUse
+    Just (Bool True) -> pure ProvenLastLocalUse
+    _ -> fail "lastLocalUse must be true or null"
+  pure (VariableUse ident lastUse)
 
 sourceSpanFromJSON :: FilePath -> Value -> Parser SourceSpan
 sourceSpanFromJSON modulePath = withObject "SourceSpan" $ \o ->
@@ -134,14 +262,28 @@ moduleFromJSON = withObject "Module" moduleFromObj
     version <- o .: "builtWith" >>= versionFromJSON
     moduleName <- o .: "moduleName" >>= moduleNameFromJSON
     modulePath <- o .: "modulePath"
+    types <- o .:? "typeTable" .!= V.empty
+    let context = JSONContext modulePath types
     moduleSourceSpan <- o .: "sourceSpan" >>= sourceSpanFromJSON modulePath
-    moduleImports <- o .: "imports" >>= listParser (importFromJSON modulePath)
+    moduleImports <- o .: "imports" >>= listParser (importFromJSON context)
     moduleExports <- o .: "exports" >>= listParser identFromJSON
     moduleReExports <- o .: "reExports" >>= reExportsFromJSON
-    moduleDecls <- o .: "decls" >>= listParser (bindFromJSON modulePath)
-    moduleForeign <- o .: "foreign" >>= listParser identFromJSON
+    moduleDecls <- o .: "decls" >>= listParser (bindFromJSON context)
+    foreignIdents <- o .: "foreign" >>= listParser identFromJSON
+    foreignAnnsRaw <- o .:? "foreignAnnotations" .!= M.empty :: Parser (M.Map String Value)
+    moduleForeign <- mapM (\ident -> do
+          let key = T.unpack (runIdent ident)
+          ann <- case M.lookup key foreignAnnsRaw of
+                   Just val -> annFromJSON context val
+                   Nothing -> return (ssAnn moduleSourceSpan)
+          return (ann, ident)
+      ) foreignIdents
     moduleComments <- o .: "comments" >>= listParser parseJSON
-    return (version, Module {..})
+    moduleDataDecls <- o .:? "dataDecls" .!= [] >>= traverse (dataDeclFromJSON context)
+    moduleClassDecls <- o .:? "classDecls" .!= [] >>= traverse (classDeclFromJSON context)
+    let coreModule = Module {..}
+    validateUsageIdentities coreModule
+    return (version, coreModule)
 
   versionFromJSON :: String -> Parser Version
   versionFromJSON v =
@@ -149,18 +291,48 @@ moduleFromJSON = withObject "Module" moduleFromObj
       Just r -> return r
       Nothing -> fail "failed parsing purs version"
 
-  importFromJSON :: FilePath -> Value -> Parser (Ann, ModuleName)
-  importFromJSON modulePath = withObject "Import"
+  importFromJSON :: JSONContext -> Value -> Parser (Ann, ModuleName)
+  importFromJSON context = withObject "Import"
     (\o -> do
-      ann <- o .: "annotation" >>= annFromJSON modulePath
+      ann <- o .: "annotation" >>= annFromJSON context
       mn  <- o .: "moduleName" >>= moduleNameFromJSON
       return (ann, mn))
 
-  reExportsFromJSON :: Value -> Parser (M.Map ModuleName [Ident])
+
   reExportsFromJSON = fmap (M.map (map Ident)) . parseJSON
 
-bindFromJSON :: FilePath -> Value -> Parser (Bind Ann)
-bindFromJSON modulePath = withObject "Bind" bindFromObj
+dataDeclFromJSON :: JSONContext -> Value -> Parser DataDecl
+dataDeclFromJSON context = withObject "DataDecl" $ \o -> do
+  name <- (o .: "name" <|> o .: "typeName") >>= properNameFromJSON
+  typeVars <- o .: "vars" <|> o .: "typeVars"
+  constructors <- o .: "constructors" >>= listParser (dataConstructorFromJSON context)
+  pure $ DataDecl name typeVars constructors
+
+dataConstructorFromJSON :: JSONContext -> Value -> Parser DataConstructor
+dataConstructorFromJSON context = withObject "DataConstructor" $ \o -> do
+  name <- (o .: "name" <|> o .: "constructorName") >>= properNameFromJSON
+  fields <- (o .: "fields" <|> o .: "fieldTypes") >>= listParser (requiredCoreFnTypeFromJSON context)
+  pure $ DataConstructor name fields
+
+classDeclFromJSON :: JSONContext -> Value -> Parser ClassDecl
+classDeclFromJSON context = withObject "ClassDecl" $ \o -> do
+  name <- o .: "name" >>= properNameFromJSON
+  typeVars <- o .: "vars"
+  superclasses <- o .: "superclasses" >>= listParser superclassFromJSON
+  methods <- o .: "methods" >>= listParser methodFromJSON
+  pure $ ClassDecl name typeVars superclasses methods
+  where
+  superclassFromJSON = withObject "Superclass" $ \o -> do
+    name <- o .: "fqn" >>= qualifiedProperNameFromJSON
+    args <- o .: "args" >>= listParser (requiredCoreFnTypeFromJSON context)
+    pure (name, args)
+  methodFromJSON = withObject "ClassMethod" $ \o -> do
+    name <- o .: "name" >>= identFromJSON
+    ty <- o .: "type" >>= requiredCoreFnTypeFromJSON context
+    pure (name, ty)
+
+bindFromJSON :: JSONContext -> Value -> Parser (Bind Ann)
+bindFromJSON context = withObject "Bind" bindFromObj
   where
   bindFromObj :: Object -> Parser (Bind Ann)
   bindFromObj o = do
@@ -172,9 +344,9 @@ bindFromJSON modulePath = withObject "Bind" bindFromObj
         
   bindFromObj' :: Object -> Parser ((Ann, Ident), Expr Ann)
   bindFromObj' o = do
-    a <- o .: "annotation" >>= annFromJSON modulePath
+    a <- o .: "annotation" >>= annFromJSON context
     i <- o .: "identifier" >>= identFromJSON
-    e <- o .: "expression" >>= exprFromJSON modulePath
+    e <- o .: "expression" >>= exprFromJSON context
     return ((a, i), e)
 
 recordFromJSON :: (Value -> Parser a) -> Value -> Parser [(PSString, a)]
@@ -185,8 +357,8 @@ recordFromJSON p = listParser parsePair
     a <- p v'
     return (l, a)
 
-exprFromJSON :: FilePath -> Value -> Parser (Expr Ann)
-exprFromJSON modulePath = withObject "Expr" exprFromObj
+exprFromJSON :: JSONContext -> Value -> Parser (Expr Ann)
+exprFromJSON context = withObject "Expr" exprFromObj
   where
   exprFromObj o = do
     type_ <- o .: "type"
@@ -198,87 +370,94 @@ exprFromJSON modulePath = withObject "Expr" exprFromObj
       "ObjectUpdate"  -> objectUpdateFromObj o
       "Abs"           -> absFromObj o
       "App"           -> appFromObj o
+      "TypeApp"       -> typeAppFromObj o
       "Case"          -> caseFromObj o
       "Let"           -> letFromObj o
       _               -> fail ("not recognized expression type: \"" ++ T.unpack type_ ++ "\"")
 
   varFromObj o = do
-    ann <- o .: "annotation" >>= annFromJSON modulePath
+    ann <- o .: "annotation" >>= annFromJSON context
     qi <- o .: "value" >>= qualifiedFromJSON Ident
     return $ Var ann qi
 
   literalExprFromObj o = do
-    ann <- o .: "annotation" >>= annFromJSON modulePath
-    lit <- o .: "value" >>= literalFromJSON (exprFromJSON modulePath)
+    ann <- o .: "annotation" >>= annFromJSON context
+    lit <- o .: "value" >>= literalFromJSON (exprFromJSON context)
     return $ Literal ann lit
 
   constructorFromObj o = do
-    ann <- o .: "annotation" >>= annFromJSON modulePath
+    ann <- o .: "annotation" >>= annFromJSON context
     tyn <- o .: "typeName" >>= properNameFromJSON
-    con <- o .: "constructorName" >>= properNameFromJSON
-    is  <- o .: "fieldNames" >>= listParser identFromJSON
+    con <- o .: "name" <|> o .: "constructorName" >>= properNameFromJSON
+    is  <- o .: "fields" <|> o .: "fieldNames" >>= listParser identFromJSON
     return $ Constructor ann tyn con is
 
   accessorFromObj o = do
-    ann <- o .: "annotation" >>= annFromJSON modulePath
+    ann <- o .: "annotation" >>= annFromJSON context
     f   <- o .: "fieldName"
-    e <- o .: "expression" >>= exprFromJSON modulePath
+    e <- o .: "expression" >>= exprFromJSON context
     return $ Accessor ann f e
 
   objectUpdateFromObj o = do
-    ann <- o .: "annotation" >>= annFromJSON modulePath
-    e   <- o .: "expression" >>= exprFromJSON modulePath
+    ann <- o .: "annotation" >>= annFromJSON context
+    e   <- o .: "expression" >>= exprFromJSON context
     copy <- o .: "copy" >>= parseJSON
-    us  <- o .: "updates" >>= recordFromJSON (exprFromJSON modulePath)
+    us  <- o .: "updates" >>= recordFromJSON (exprFromJSON context)
     return $ ObjectUpdate ann e copy us
 
   absFromObj o = do
-    ann <- o .: "annotation" >>= annFromJSON modulePath
+    ann <- o .: "annotation" >>= annFromJSON context
     idn <- o .: "argument" >>= identFromJSON
-    e   <- o .: "body" >>= exprFromJSON modulePath
+    e   <- o .: "body" >>= exprFromJSON context
     return $ Abs ann idn e
 
   appFromObj o = do
-    ann <- o .: "annotation" >>= annFromJSON modulePath
-    e   <- o .: "abstraction" >>= exprFromJSON modulePath
-    e'  <- o .: "argument" >>= exprFromJSON modulePath
+    ann <- o .: "annotation" >>= annFromJSON context
+    e   <- o .: "abstraction" >>= exprFromJSON context
+    e'  <- o .: "argument" >>= exprFromJSON context
     return $ App ann e e'
 
+  typeAppFromObj o = do
+    ann <- o .: "annotation" >>= annFromJSON context
+    e <- o .: "expression" >>= exprFromJSON context
+    ty <- o .: "typeArgument" >>= requiredCoreFnTypeFromJSON context
+    return $ TypeApp ann e ty
+
   caseFromObj o = do
-    ann <- o .: "annotation" >>= annFromJSON modulePath
-    cs  <- o .: "caseExpressions" >>= listParser (exprFromJSON modulePath)
-    cas <- o .: "caseAlternatives" >>= listParser (caseAlternativeFromJSON modulePath)
+    ann <- o .: "annotation" >>= annFromJSON context
+    cs  <- o .: "caseExpressions" >>= listParser (exprFromJSON context)
+    cas <- o .: "caseAlternatives" >>= listParser (caseAlternativeFromJSON context)
     return $ Case ann cs cas
 
   letFromObj o = do
-    ann <- o .: "annotation" >>= annFromJSON modulePath
-    bs  <- o .: "binds" >>= listParser (bindFromJSON modulePath)
-    e   <- o .: "expression" >>= exprFromJSON modulePath
+    ann <- o .: "annotation" >>= annFromJSON context
+    bs  <- o .: "binds" >>= listParser (bindFromJSON context)
+    e   <- o .: "expression" >>= exprFromJSON context
     return $ Let ann bs e
 
-caseAlternativeFromJSON :: FilePath -> Value -> Parser (CaseAlternative Ann)
-caseAlternativeFromJSON modulePath = withObject "CaseAlternative" caseAlternativeFromObj
+caseAlternativeFromJSON :: JSONContext -> Value -> Parser (CaseAlternative Ann)
+caseAlternativeFromJSON context = withObject "CaseAlternative" caseAlternativeFromObj
   where
     caseAlternativeFromObj o = do
-      bs <- o .: "binders" >>= listParser (binderFromJSON modulePath)
+      bs <- o .: "binders" >>= listParser (binderFromJSON context)
       isGuarded <- o .: "isGuarded"
       if isGuarded
         then do
           es <- o .: "expressions" >>= listParser parseResultWithGuard
           return $ CaseAlternative bs (Left es)
         else do
-          e <- o .: "expression" >>= exprFromJSON modulePath
+          e <- o .: "expression" >>= exprFromJSON context
           return $ CaseAlternative bs (Right e)
 
     parseResultWithGuard :: Value -> Parser (Guard Ann, Expr Ann)
     parseResultWithGuard = withObject "parseCaseWithGuards" $
       \o -> do
-        g <- o .: "guard" >>= exprFromJSON modulePath
-        e <- o .: "expression" >>= exprFromJSON modulePath
+        g <- o .: "guard" >>= exprFromJSON context
+        e <- o .: "expression" >>= exprFromJSON context
         return (g, e)
 
-binderFromJSON :: FilePath -> Value -> Parser (Binder Ann)
-binderFromJSON modulePath = withObject "Binder" binderFromObj
+binderFromJSON :: JSONContext -> Value -> Parser (Binder Ann)
+binderFromJSON context = withObject "Binder" binderFromObj
   where
   binderFromObj o = do
     type_ <- o .: "binderType"
@@ -292,28 +471,149 @@ binderFromJSON modulePath = withObject "Binder" binderFromObj
 
 
   nullBinderFromObj o = do
-    ann <- o .: "annotation" >>= annFromJSON modulePath
+    ann <- o .: "annotation" >>= annFromJSON context
     return $ NullBinder ann
 
   varBinderFromObj o = do
-    ann <- o .: "annotation" >>= annFromJSON modulePath
+    ann <- o .: "annotation" >>= annFromJSON context
     idn <- o .: "identifier" >>= identFromJSON
     return $ VarBinder ann idn
 
   literalBinderFromObj o = do
-    ann <- o .: "annotation" >>= annFromJSON modulePath
-    lit <- o .: "literal" >>= literalFromJSON (binderFromJSON modulePath)
+    ann <- o .: "annotation" >>= annFromJSON context
+    lit <- o .: "literal" >>= literalFromJSON (binderFromJSON context)
     return $ LiteralBinder ann lit
 
   constructorBinderFromObj o = do
-    ann <- o .: "annotation" >>= annFromJSON modulePath
+    ann <- o .: "annotation" >>= annFromJSON context
     tyn <- o .: "typeName" >>= qualifiedFromJSON ProperName
-    con <- o .: "constructorName" >>= qualifiedFromJSON ProperName
-    bs  <- o .: "binders" >>= listParser (binderFromJSON modulePath)
+    con <- o .: "name" <|> o .: "constructorName" >>= qualifiedFromJSON ProperName
+    bs  <- o .: "binders" >>= listParser (binderFromJSON context)
     return $ ConstructorBinder ann tyn con bs
 
   namedBinderFromObj o = do
-    ann <- o .: "annotation" >>= annFromJSON modulePath
+    ann <- o .: "annotation" >>= annFromJSON context
     n   <- o .: "identifier" >>= identFromJSON
-    b   <- o .: "binder" >>= binderFromJSON modulePath
+    b   <- o .: "binder" >>= binderFromJSON context
     return $ NamedBinder ann n b
+
+-- | Reject dangling identities, duplicate declarations, and facts on the wrong
+-- kind of node. This validates identity and scope, not the usage proof itself.
+-- A binding with missing metadata still shadows an outer binding of that name.
+type UsageScope = M.Map Ident (Maybe BindingId)
+type UsageValidation = StateT (S.Set BindingId) Parser
+
+validateUsageIdentities :: Module Ann -> Parser ()
+validateUsageIdentities coreModule = flip evalStateT S.empty $ do
+  traverse_ (validatePlainAnn . fst) (moduleImports coreModule)
+  traverse_ (validatePlainAnn . fst) (moduleForeign coreModule)
+  traverse_ validateTopLevel (moduleDecls coreModule)
+  where
+  validateTopLevel (NonRec ann _ expr) = do
+    validatePlainAnn ann
+    validateUsageExpr M.empty expr
+  validateTopLevel (Rec binds) = traverse_ (\((ann, _), expr) -> do
+    validatePlainAnn ann
+    validateUsageExpr M.empty expr) binds
+
+annUsage :: Ann -> UsageInfo
+annUsage (_, _, _, _, info) = maybe emptyUsageInfo id info
+
+validatePlainAnn :: Ann -> UsageValidation ()
+validatePlainAnn ann = do
+  let info = annUsage ann
+  unless (bindingUsage info == Nothing && variableUse info == Nothing) $
+    lift $ fail "usage facts are not valid on this annotation"
+
+registerUsageBinding :: UsageScope -> Ann -> Ident -> UsageValidation UsageScope
+registerUsageBinding scope ann ident = do
+  let info = annUsage ann
+      bindingId = bindingUsageId <$> bindingUsage info
+  unless (variableUse info == Nothing) $
+    lift $ fail "variableUse is not valid on a binding annotation"
+  traverse_ (\bid -> do
+    declared <- get
+    when (S.member bid declared) $ lift $ fail "duplicate usage bindingId"
+    modify (S.insert bid)) bindingId
+  pure (M.insert ident bindingId scope)
+
+validateUsageBinds :: UsageScope -> [Bind Ann] -> UsageValidation UsageScope
+validateUsageBinds = foldM validateBind
+  where
+  validateBind scope (NonRec ann ident expr) = do
+    validateUsageExpr scope expr
+    registerUsageBinding scope ann ident
+  validateBind scope (Rec binds) = do
+    scope' <- foldM (\env ((ann, ident), _) -> registerUsageBinding env ann ident) scope binds
+    traverse_ (validateUsageExpr scope' . snd) binds
+    pure scope'
+
+literalChildren :: Literal a -> [a]
+literalChildren (ArrayLiteral xs) = xs
+literalChildren (ObjectLiteral xs) = map snd xs
+literalChildren _ = []
+
+validateUsageExpr :: UsageScope -> Expr Ann -> UsageValidation ()
+validateUsageExpr scope = \case
+  Literal ann lit -> do
+    validatePlainAnn ann
+    traverse_ (validateUsageExpr scope) (literalChildren lit)
+  Constructor ann _ _ _ -> validatePlainAnn ann
+  Accessor ann _ expr -> do
+    validatePlainAnn ann
+    validateUsageExpr scope expr
+  ObjectUpdate ann expr _ fields -> do
+    validatePlainAnn ann
+    validateUsageExpr scope expr
+    traverse_ (validateUsageExpr scope . snd) fields
+  Abs ann ident body -> do
+    scope' <- registerUsageBinding scope ann ident
+    validateUsageExpr scope' body
+  App ann function argument -> do
+    validatePlainAnn ann
+    validateUsageExpr scope function
+    validateUsageExpr scope argument
+  Var ann qualified -> do
+    let info = annUsage ann
+    unless (bindingUsage info == Nothing) $
+      lift $ fail "bindingUsage is not valid on a variable occurrence"
+    traverse_ (\usage -> do
+      let target = case qualified of
+            Qualified (BySourcePos _) ident -> M.lookup ident scope >>= id
+            Qualified (ByModuleName _) _ -> Nothing
+      unless (target == Just (variableBindingId usage)) $
+        lift $ fail "variableUse does not identify its in-scope local binding") (variableUse info)
+  Case ann expressions alternatives -> do
+    validatePlainAnn ann
+    traverse_ (validateUsageExpr scope) expressions
+    traverse_ (validateUsageAlternative scope) alternatives
+  Let ann binds body -> do
+    validatePlainAnn ann
+    scope' <- validateUsageBinds scope binds
+    validateUsageExpr scope' body
+  TypeApp ann expr _ -> do
+    validatePlainAnn ann
+    validateUsageExpr scope expr
+
+validateUsageAlternative :: UsageScope -> CaseAlternative Ann -> UsageValidation ()
+validateUsageAlternative scope (CaseAlternative binders result) = do
+  scope' <- foldM validateUsageBinder scope binders
+  case result of
+    Right expr -> validateUsageExpr scope' expr
+    Left guarded -> traverse_ (\(guard, expr) -> do
+      validateUsageExpr scope' guard
+      validateUsageExpr scope' expr) guarded
+
+validateUsageBinder :: UsageScope -> Binder Ann -> UsageValidation UsageScope
+validateUsageBinder scope = \case
+  NullBinder ann -> validatePlainAnn ann >> pure scope
+  LiteralBinder ann lit -> do
+    validatePlainAnn ann
+    foldM validateUsageBinder scope (literalChildren lit)
+  VarBinder ann ident -> registerUsageBinding scope ann ident
+  ConstructorBinder ann _ _ binders -> do
+    validatePlainAnn ann
+    foldM validateUsageBinder scope binders
+  NamedBinder ann ident binder -> do
+    scope' <- registerUsageBinding scope ann ident
+    validateUsageBinder scope' binder

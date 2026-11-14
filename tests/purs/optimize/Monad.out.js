@@ -12,12 +12,14 @@ var liftM1 = function (dictMonad) {
     };
 };
 var ap = function (dictMonad) {
-    var bind = Control_Bind.bind(dictMonad.Bind1());
+    var Bind1 = dictMonad.Bind1();
+    var bind = Control_Bind.bind(Bind1);
+    var bind1 = Control_Bind.bind(Bind1);
     var pure = Control_Applicative.pure(dictMonad.Applicative0());
     return function (f) {
         return function (a) {
             return bind(f)(function (f$prime) {
-                return bind(a)(function (a$prime) {
+                return bind1(a)(function (a$prime) {
                     return pure(f$prime(a$prime));
                 });
             });

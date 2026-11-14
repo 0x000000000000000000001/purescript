@@ -2,7 +2,7 @@
 -- | This module performs limited common subexpression elimination
 module Language.PureScript.CoreFn.CSE (optimizeCommonSubexpressions) where
 
-import Protolude hiding (pass)
+import Protolude hiding (pass, Meta)
 
 import Control.Lens (At(..), makeLenses, non, view, (%~), (.=), (.~), (<>~), (^.))
 import Control.Monad.Supply (Supply)
@@ -20,9 +20,9 @@ import Data.Semigroup.Generic (GenericSemigroupMonoid(..))
 import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.AST.SourcePos (nullSourceSpan)
 import Language.PureScript.Constants.Libs qualified as C
-import Language.PureScript.CoreFn.Ann (Ann)
+import Language.PureScript.CoreFn.Ann (Ann, CoreFnType)
 import Language.PureScript.CoreFn.Binders (Binder(..))
-import Language.PureScript.CoreFn.Expr (Bind(..), CaseAlternative(..), Expr(..))
+import Language.PureScript.CoreFn.Expr (Bind(..), CaseAlternative(..), Expr(..), extractAnn)
 import Language.PureScript.CoreFn.Meta (Meta(IsSyntheticApp))
 import Language.PureScript.CoreFn.Traversals (everywhereOnValues, traverseCoreFn)
 import Language.PureScript.Environment (dictTypeName)
@@ -169,10 +169,19 @@ makeLenses ''CSESummary
 makeLenses ''CSEEnvironment
 
 -- |
+-- The annotation used for CSE equivalence checking.
+-- We strip source spans and comments, but retain types and metadata.
+--
+type CSEAnn = (Maybe CoreFnType, Maybe Meta)
+
+toCSEAnn :: Ann -> CSEAnn
+toCSEAnn (_, _, ty, meta, _) = (ty, meta)
+
+-- |
 -- Map from the shape of an expression to an identifier created to represent
 -- that expression, organized by scope depth.
 --
-type CSEState = IM.MonoidalIntMap (M.Map (Expr ()) Ident)
+type CSEState = IM.MonoidalIntMap (M.Map (Expr CSEAnn) Ident)
 
 -- |
 -- The monad in which CSE takes place.
@@ -236,7 +245,7 @@ newScopeWithIdents isTopLevel idents = newScope isTopLevel . flip (withBoundIden
 -- Produce, or retrieve from the state, an identifier for referencing the given
 -- expression, at and below the given depth.
 --
-generateIdentFor :: (HasCSEState m, MonadSupply m) => Int -> Expr () -> m (Bool, Ident)
+generateIdentFor :: (HasCSEState m, MonadSupply m) => Int -> Expr CSEAnn -> m (Bool, Ident)
 generateIdentFor d e = at d . non mempty . at e %%<~ \case
   Nothing    -> freshIdent (nameHint e) <&> \ident -> ((True, ident), Just ident)
   Just ident -> pure ((False, ident), Just ident)
@@ -259,10 +268,14 @@ generateIdentFor d e = at d . non mempty . at e %%<~ \case
       | GenIdent (Just name) _ <- ident -> name
     Accessor _ prop _
       | Just decodedProp <- decodeString prop -> decodedProp
+    TypeApp _ e' _ -> nameHint e'
     _ -> "ref"
 
-nullAnn :: Ann
-nullAnn = (nullSourceSpan, [], Nothing)
+-- Generated references and bindings have the type of the expression they
+-- replace, without inheriting metadata specific to its original node.
+generatedAnn :: Expr Ann -> Ann
+generatedAnn (extractAnn -> (_, _, ty, _, _)) =
+  (nullSourceSpan, [], ty, Nothing, Nothing)
 
 -- |
 -- Use a map to substitute local Vars in a list of Binds.
@@ -286,13 +299,13 @@ floatExpr
 floatExpr topLevelQB = \case
   (e, w@CSESummary{ _noFloatWithin = Nothing, .. }) -> do
     let deepestScope = if IS.null _scopesUsed then 0 else IS.findMax _scopesUsed
-    (isNew, ident) <- generateIdentFor deepestScope (void e)
+    (isNew, ident) <- generateIdentFor deepestScope (fmap toCSEAnn e)
     topLevel <- view deepestTopLevelScope
     let qb = if deepestScope > topLevel then ByNullSourcePos else topLevelQB
     let w' = w
           & (if isNew then newBindings %~ addToScope deepestScope [(ident, (_plurality, e))] else identity)
           & plurality .~ PluralityMap (M.singleton ident False)
-    pure (Var nullAnn (Qualified qb ident), w')
+    pure (Var (generatedAnn e) (Qualified qb ident), w')
   (e, w) -> pure (e, w)
 
 -- |
@@ -313,7 +326,7 @@ getNewBinds =
   where
   handleFloat (ident, (p, e)) (bs, w) =
     if fromJust . M.lookup ident . getPluralityMap $ w ^. plurality
-    then (NonRec nullAnn ident e : bs, w')
+    then (NonRec (generatedAnn e) ident e : bs, w')
     else (bs, w' & toBeReinlined %~ M.insert ident e)
     where w' = w & plurality <>~ p
 
@@ -329,7 +342,7 @@ getNewBindsAsLet
 getNewBindsAsLet = fmap (uncurry go) . getNewBinds where
   go bs = if null bs then identity else \case
     Let a bs' e' -> Let a (bs ++ bs') e'
-    e'           -> Let nullAnn bs e'
+    e'           -> Let (generatedAnn e') bs e'
 
 -- |
 -- Feed the Writer part of the monad with the requirements of this name.
@@ -386,13 +399,14 @@ optimizeCommonSubexpressions mn
   -- common subexpression elimination pass.
   shouldFloatExpr :: Expr Ann -> Bool
   shouldFloatExpr = \case
-    App (_, _, Just IsSyntheticApp) e _ -> isSimple e
+    App (_, _, _, Just IsSyntheticApp, _) e _ -> isSimple e
     _                                   -> False
 
   isSimple :: Expr Ann -> Bool
   isSimple = \case
     Var{}          -> True
     Accessor _ _ e -> isSimple e
+    TypeApp _ e _  -> isSimple e
     _              -> False
 
   handleAndWrapExpr :: Expr Ann -> CSEMonad (Expr Ann)

@@ -128,23 +128,35 @@ onVarsWithDelayAndForce f = snd . go 0 $ Just 0
       Var a i -> f delay force a i
       Abs a i e -> Abs a i <$> snd (if force == Just 0 then go (succ delay) force else go delay $ fmap pred force) e
       -- A clumsy hack to preserve TCO in a particular idiom of unsafePartial once seen in Data.Map.Internal, possibly still used elsewhere.
-      App a1 e1@(Var _ C.I_unsafePartial) (Abs a2 i e2) -> App a1 e1 . Abs a2 i <$> handleExpr' e2
+      App a1 e1 (Abs a2 i e2) | isUnsafePartial e1 -> App a1 e1 . Abs a2 i <$> handleExpr' e2
       App a e1 e2 ->
         -- `handleApp` is just to handle the constructor application exception
         -- somewhat gracefully (i.e., without requiring a deep inspection of
         -- the function expression at every step). If we didn't care about
         -- constructors, this could have been simply:
         --   App a <$> snd (go delay (fmap succ force)) e1 <*> snd (go delay Nothing) e2
-        handleApp 1 [(a, e2)] e1
+        handleApp 1 [Right (a, e2)] e1
       Case a vs alts -> Case a <$> traverse (snd $ go delay Nothing) vs <*> traverse handleCaseAlternative alts
       Let a ds e -> Let a <$> traverse (fst $ go delay Nothing) ds <*> handleExpr' e
       other -> handleExpr other
 
     handleApp len args = \case
-      App a e1 e2 -> handleApp (len + 1) ((a, e2) : args) e1
-      Var a@(_, _, Just meta) i | isConstructorLike meta
-        -> foldl (\e1 (a2, e2) -> App a2 <$> e1 <*> handleExpr' e2) (f delay force a i) args
-      e -> foldl (\e1 (a2, e2) -> App a2 <$> e1 <*> snd (go delay Nothing) e2) (snd (go delay (fmap (+ len) force)) e) args
+      App a e1 e2 -> handleApp (len + 1) (Right (a, e2) : args) e1
+      -- Type arguments do not force a value or obscure a constructor. Keep
+      -- them in order when rebuilding the application spine.
+      TypeApp a e ty -> handleApp len (Left (a, ty) : args) e
+      Var a@(_, _, _, Just meta, _) i | isConstructorLike meta
+        -> foldl (applyArgument handleExpr') (f delay force a i) args
+      e -> foldl (applyArgument (snd (go delay Nothing))) (snd (go delay (fmap (+ len) force)) e) args
+
+    applyArgument handleArg e1 = \case
+      Left (a, ty) -> TypeApp a <$> e1 <*> pure ty
+      Right (a, e2) -> App a <$> e1 <*> handleArg e2
+
+    isUnsafePartial = \case
+      Var _ C.I_unsafePartial -> True
+      TypeApp _ e _ -> isUnsafePartial e
+      _ -> False
     isConstructorLike = \case
       IsConstructor{} -> True
       IsNewtype -> True
@@ -540,12 +552,12 @@ applyLazinessTransform mn rawItems = let
     _ -> internalError "Unexpected argument to lazifyIdent"
 
   makeForceCall :: Ann -> Ident -> Expr Ann
-  makeForceCall (ss, _, _) ident
+  makeForceCall (ss, _, _, _, _) ident =
     -- We expect the functions produced by `runtimeLazy` to accept one
     -- argument: the line number on which this reference is made. The runtime
     -- code uses this number to generate a message that identifies where the
     -- evaluation looped.
-    = App nullAnn (Var nullAnn . Qualified ByNullSourcePos $ lazifyIdent ident)
+    App nullAnn (Var nullAnn . Qualified ByNullSourcePos $ lazifyIdent ident)
     . Literal nullAnn . NumericLiteral . Left . toInteger . sourcePosLine
     $ spanStart ss
 

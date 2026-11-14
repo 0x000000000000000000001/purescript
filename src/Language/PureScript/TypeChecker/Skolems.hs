@@ -99,13 +99,15 @@ skolemEscapeCheck expr@TypedValue{} =
        -> Expr
        -> ((Set SkolemScope, Maybe SourceSpan), [ErrorMessage])
     go (scopes, _) (PositionedValue ss _ _) = ((scopes, Just ss), [])
-    go (scopes, ssUsed) val@(TypedValue _ _ ty) =
+    go (scopes, ssUsed) val@(TypedValue check inner ty) =
         ( (allScopes, ssUsed)
-        , [ ErrorMessage (maybe id ((:) . positionedError) ssUsed [ ErrorInExpression val ]) $
-              EscapedSkolem name (nonEmptySpan ssBound) ty
-          | (ssBound, name, scope) <- collectSkolems ty
-          , notMember scope allScopes
-          ]
+        , if check || not (isInstantiation inner) then
+            [ ErrorMessage (maybe id ((:) . positionedError) ssUsed [ ErrorInExpression val ]) $
+                EscapedSkolem name (nonEmptySpan ssBound) ty
+            | (ssBound, name, scope) <- collectSkolems ty
+            , notMember scope allScopes
+            ]
+          else []
         )
       where
         -- Any new skolem scopes introduced by universal quantifiers
@@ -128,4 +130,13 @@ skolemEscapeCheck expr@TypedValue{} =
           collect (Skolem ss name _ _ scope) = [(ss, name, scope)]
           collect _ = []
     go scos _ = (scos, [])
+
+    -- Elaboration records intermediate type applications that were not present
+    -- in the source expression. Their checked result and descendants still
+    -- participate in the escape check. Other unchecked annotations retain the
+    -- usual nested escape check.
+    isInstantiation :: Expr -> Bool
+    isInstantiation = \case
+      VisibleTypeApp{} -> True
+      _ -> False
 skolemEscapeCheck _ = internalError "skolemEscapeCheck: untyped value"
