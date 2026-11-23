@@ -4,6 +4,7 @@ module TestCoreFn (spec) where
 
 import Prelude
 
+import Control.Monad.Supply (runSupply)
 import Data.Aeson (Result(..), Value(..))
 import Data.Aeson.KeyMap qualified as KM
 import Data.Aeson.Types (parse)
@@ -20,6 +21,7 @@ import Language.PureScript.CoreFn.Ann (BindingId(..), BindingUsage(..), LastLoca
 import Language.PureScript.CoreFn.Desugar (moduleToCoreFn)
 import Language.PureScript.CoreFn.FromJSON (moduleFromJSON)
 import Language.PureScript.CoreFn.Module (ClassDecl(..), DataConstructor(..), DataDecl(..))
+import Language.PureScript.CoreFn.Optimizer (optimizeCoreFn)
 import Language.PureScript.CoreFn.ToJSON (moduleToJSON)
 import Language.PureScript.CoreFn.Usage (computeUsage)
 import Language.PureScript.Environment (DataDeclType(..), Environment(..), NameKind(Public), TypeKind(..), initEnvironment, kindType, (-:>))
@@ -60,6 +62,76 @@ spec = context "CoreFnFromJson" $ do
       mp = "src/Example/Main.purs"
       ss = SourceSpan mp (SourcePos 0 0) (SourcePos 0 0)
       ann = ssAnn ss
+
+  context "typed function application optimization" $ do
+    let qualified owner name = Qualified (ByModuleName $ ModuleName owner) (Ident name)
+        typed ty = (ss, [], Just ty, Nothing, Nothing)
+        fnType = CFFunc [CFInt] CFString
+        fn = Var (typed fnType) (qualified "Functions" "render")
+        arg = Literal (typed CFInt) (NumericLiteral $ Left 42)
+        resultAnn = (ss, [LineComment "application result"], Just CFString, Nothing, Nothing)
+        helper name = Var ann (qualified "Data.Function" name)
+        instantiated name = TypeApp ann (TypeApp ann (helper name) CFInt) CFString
+        call helperExpr first second = App resultAnn (App ann helperExpr first) second
+        fixture expr = Module ss [] mn mp [] [] M.empty []
+          [NonRec ann (Ident "test") expr] [] []
+        optimize = fst . runSupply 0 . optimizeCoreFn
+        declarations expr = moduleDecls $ optimize $ fixture expr
+        expected expr = [NonRec ann (Ident "test") expr]
+
+    specify "still simplifies apply and applyFlipped without type applications" $ do
+      declarations (call (helper "apply") fn arg) `shouldBe` expected (App resultAnn fn arg)
+      declarations (call (helper "applyFlipped") arg fn) `shouldBe` expected (App resultAnn fn arg)
+
+    specify "simplifies apply through nested type applications" $
+      declarations (call (instantiated "apply") fn arg) `shouldBe` expected (App resultAnn fn arg)
+
+    specify "simplifies applyFlipped through nested type applications" $
+      declarations (call (instantiated "applyFlipped") arg fn) `shouldBe` expected (App resultAnn fn arg)
+
+    specify "preserves operand instantiations and the complete result annotation" $ do
+      let polyFn = Var (typed $ CFForAll ["a"] $ CFFunc [CFTypeVar "a"] CFString)
+            (qualified "Functions" "renderAny")
+          typedFn = TypeApp (typed fnType) polyFn CFInt
+          polyArg = Var (typed $ CFForAll ["a"] $ CFTypeVar "a")
+            (qualified "Functions" "value")
+          typedArg = TypeApp (typed CFInt) polyArg CFInt
+      declarations (call (instantiated "apply") typedFn typedArg)
+        `shouldBe` expected (App resultAnn typedFn typedArg)
+      declarations (call (instantiated "applyFlipped") typedArg typedFn)
+        `shouldBe` expected (App resultAnn typedFn typedArg)
+
+    specify "preserves type applications surrounding the complete expression" $ do
+      let polymorphic = CFForAll ["a"] $ CFFunc [CFTypeVar "a"] (CFTypeVar "a")
+          maker = Var (typed $ CFFunc [CFInt] polymorphic) (qualified "Functions" "makeIdentity")
+          apply = TypeApp ann (TypeApp ann (helper "apply") CFInt) polymorphic
+          outer expr = TypeApp (typed $ CFFunc [CFString] CFString) expr CFString
+          input = outer $ App (typed polymorphic) (App ann apply maker) arg
+          output = outer $ App (typed polymorphic) maker arg
+      declarations input `shouldBe` expected output
+
+    specify "preserves partial applications and unrelated functions with the same name" $ do
+      let partial = App (typed fnType) (instantiated "apply") fn
+          other = TypeApp ann (Var ann $ qualified "Application" "apply") CFInt
+          unrecognized = call other fn arg
+      mapM_ (\expr -> declarations expr `shouldBe` expected expr)
+        [partial, unrecognized]
+
+    specify "keeps typed module declarations and the optimized expression in serialized TAST" $ do
+      let original = (fixture $ call (instantiated "apply") fn arg)
+            { moduleDataDecls = [DataDecl (ProperName "Box") ["a"]
+                [DataConstructor (ProperName "Box") [CFTypeVar "a"]]]
+            , moduleClassDecls = [ClassDecl (ProperName "Render") ["a"] []
+                [(Ident "render", CFFunc [CFTypeVar "a"] CFString)]]
+            , moduleForeign = [(typed fnType, Ident "foreignRender")]
+            }
+          optimized = optimize original
+          wanted = original { moduleDecls = expected (App resultAnn fn arg) }
+          version = Version [0] []
+      moduleToJSON version optimized `shouldBe` moduleToJSON version wanted
+      case parseModule $ moduleToJSON version optimized of
+        Error message -> expectationFailure message
+        Success (_, decoded) -> moduleToJSON version decoded `shouldBe` moduleToJSON version wanted
 
   context "local usage facts" $ do
     let x = Ident "x"

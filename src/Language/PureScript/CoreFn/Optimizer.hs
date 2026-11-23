@@ -25,7 +25,14 @@ optimizeModuleDecls = map transformBinds
 
 optimizeDataFunctionApply :: Expr a -> Expr a
 optimizeDataFunctionApply e = case e of
-  (App a (App _ (Var _ fn) x) y)
+  (App a (App _ (appliedFunction -> Just fn) x) y)
     | C.I_functionApply <- fn -> App a x y
     | C.I_functionApplyFlipped <- fn -> App a y x
   _ -> e
+  where
+  -- Look through instantiations only to recognize the helper being eliminated.
+  -- Its type arguments belong to apply, not to either operand. Keep the
+  -- operands (including their TypeApps) and the result annotation unchanged.
+  appliedFunction (TypeApp _ fn _) = appliedFunction fn
+  appliedFunction (Var _ fn) = Just fn
+  appliedFunction _ = Nothing
